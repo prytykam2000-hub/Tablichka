@@ -49,9 +49,9 @@ const PaperAirplaneIcon = () => (
   </svg>
 );
 
-const LinkIcon = () => (
+const XMarkIcon = () => (
   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
   </svg>
 );
 
@@ -139,7 +139,7 @@ const App: React.FC = () => {
 
     peer.on('error', (err) => {
       console.error('Peer error:', err);
-      // If ID is taken (rare with random 4 digits but possible), retry?
+      // If ID is taken, retry?
       if (err.type === 'unavailable-id') {
          peer.destroy();
          peerInstance.current = null;
@@ -152,8 +152,6 @@ const App: React.FC = () => {
 
     peer.on('disconnected', () => {
       console.log('Peer disconnected from server');
-      // PeerJS sometimes disconnects but can reconnect.
-      // For simplicity, we just mark status.
     });
   };
 
@@ -197,6 +195,31 @@ const App: React.FC = () => {
       console.error('Connection error', err);
       setConnectionStatus('disconnected');
     });
+  };
+
+  const handleDisconnect = () => {
+    if (connRef.current) {
+      connRef.current.close();
+    }
+    setConnectionStatus('disconnected');
+    
+    // If we were client mode, remove the ?host param from URL to go back to standalone/host mode capabilities
+    if (isClientMode) {
+      setIsClientMode(false);
+      const url = new URL(window.location.href);
+      url.searchParams.delete('host');
+      window.history.pushState({}, '', url.toString());
+      
+      // We might want to re-init as a random host
+      if (peerInstance.current) {
+        peerInstance.current.destroy();
+        peerInstance.current = null;
+      }
+      setTimeout(() => {
+        const randomId = generateShortId();
+        initializePeer(randomId, null);
+      }, 500);
+    }
   };
 
   const handleManualConnect = (e: React.FormEvent) => {
@@ -345,9 +368,7 @@ const App: React.FC = () => {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/80 backdrop-blur-sm p-4 animate-in fade-in duration-200">
           <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm p-6 border border-slate-200 relative">
              <button onClick={() => { setShowQrModal(false); setShowManualEntry(false); }} className="absolute top-4 right-4 text-slate-400 hover:text-slate-600">
-               <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-               </svg>
+               <XMarkIcon />
              </button>
 
              {showManualEntry ? (
@@ -465,20 +486,27 @@ const App: React.FC = () => {
           <div className="flex items-center gap-2">
             {!isClientMode && (
               <button
-                onClick={() => setShowQrModal(true)}
-                className={`text-sm font-medium px-4 py-2 rounded-lg transition-colors flex items-center gap-2 border ${
+                onClick={connectionStatus === 'connected' ? handleDisconnect : () => setShowQrModal(true)}
+                className={`text-sm font-medium px-4 py-2 rounded-lg transition-all flex items-center gap-2 border group ${
                   connectionStatus === 'connected' 
-                  ? "text-green-700 border-green-200 bg-green-50" 
+                  ? "text-green-700 border-green-200 bg-green-50 hover:bg-red-50 hover:text-red-600 hover:border-red-200" 
                   : "text-slate-600 border-slate-200 bg-white hover:bg-slate-50"
                 }`}
+                title={connectionStatus === 'connected' ? "Натисніть, щоб відключити телефон" : ""}
               >
                 {connectionStatus === 'connected' ? (
                   <>
-                    <span className="relative flex h-2 w-2">
-                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
-                        <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
+                    <span className="group-hover:hidden flex items-center gap-2">
+                      <span className="relative flex h-2 w-2">
+                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                          <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
                       </span>
-                    Телефон підключено
+                      Телефон підключено
+                    </span>
+                    <span className="hidden group-hover:flex items-center gap-2">
+                      <XMarkIcon />
+                      Відключити
+                    </span>
                   </>
                 ) : (
                   <>
@@ -500,9 +528,19 @@ const App: React.FC = () => {
             )}
 
             {isClientMode && (
-              <div className="flex items-center gap-2 text-sm">
-                  <span className={`w-2 h-2 rounded-full ${connectionStatus === 'connected' ? 'bg-green-500' : 'bg-red-500'}`}></span>
-                  <span className="text-slate-600">{connectionStatus === 'connected' ? 'З\'єднано з ПК' : 'Немає з\'єднання'}</span>
+              <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-2 text-sm">
+                    <span className={`w-2 h-2 rounded-full ${connectionStatus === 'connected' ? 'bg-green-500' : 'bg-red-500'}`}></span>
+                    <span className="text-slate-600">{connectionStatus === 'connected' ? 'З\'єднано з ПК' : 'Немає з\'єднання'}</span>
+                  </div>
+                  {connectionStatus === 'connected' && (
+                    <button 
+                      onClick={handleDisconnect}
+                      className="text-xs bg-white border border-slate-200 px-2 py-1 rounded text-slate-500 hover:text-red-500 hover:border-red-200"
+                    >
+                      Відключитися
+                    </button>
+                  )}
               </div>
             )}
           </div>
