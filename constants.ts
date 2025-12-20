@@ -1,0 +1,31 @@
+import { LabParameter } from './types';
+
+// The strict order defined in the requirements
+export const LAB_PARAMETERS: LabParameter[] = [
+  { id: 'leukocytes', label: 'Лейкоцити (WBC)' },
+  { id: 'erythrocytes', label: 'Еритроцити (RBC)' },
+  { id: 'hemoglobin', label: 'Гемоглобін (HGB)' },
+  { id: 'hematocrit', label: 'Гематокрит (HCT)' },
+  { id: 'platelets', label: 'Тромбоцити (PLT)' },
+  { id: 'esr', label: 'ШОЕ (ESR)' },
+  { id: 'bilirubin_total', label: 'Білірубін загальний' },
+  { id: 'alt', label: 'АЛТ (ALT)' },
+  { id: 'ast', label: 'АСТ (AST)' },
+  { id: 'urea', label: 'Сечовина' },
+  { id: 'creatinine', label: 'Креатинін' },
+  { id: 'amylase', label: 'Альфа-амілаза' },
+  { id: 'glucose', label: 'Глюкоза' },
+  { id: 'protein_total', label: 'Білок загальний' },
+  { id: 'iron', label: 'Залізо' },
+  { id: 'sodium', label: 'Натрій (Na+)' },
+  { id: 'potassium', label: 'Калій (K+)' },
+  { id: 'chlorine', label: 'Хлор (Cl-)' },
+  { id: 'crp', label: 'CRP (C-реактивний білок)' },
+  { id: 'albumin', label: 'Альбумін' },
+  { id: 'prothrombin_time', label: 'Протромбіновий час' },
+  { id: 'inr', label: 'МНО (INR)' },
+  { id: 'prothrombin_quick', label: 'Протромбін по Квіку' },
+  { id: 'fibrinogen', label: 'Фібриноген' },
+  { id: 'aptt', label: 'АЧТЧ (APTT)' },
+  { id: 'procalcitonin', label: 'Прокальцитонін' },
+];

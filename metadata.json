@@ -1,0 +1,7 @@
+{
+  "name": "Lab2Excel Converter",
+  "description": "An intelligent tool to extract medical lab results from text or images and format them for Excel columns.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}

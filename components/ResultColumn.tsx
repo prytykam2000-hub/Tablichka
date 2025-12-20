@@ -1,0 +1,105 @@
+import React, { useState } from 'react';
+import { LAB_PARAMETERS } from '../constants';
+import { LabResults } from '../types';
+
+interface ResultColumnProps {
+  mergedResults: LabResults;
+  fragmentCount: number;
+}
+
+export const ResultColumn: React.FC<ResultColumnProps> = ({ mergedResults, fragmentCount }) => {
+  const [copied, setCopied] = useState(false);
+
+  // Format value: replaces dot with comma, returns empty string for null/undefined
+  const formatValue = (val: string | null | undefined): string => {
+    if (val === null || val === undefined || val === '') return '';
+    return val.replace('.', ',');
+  };
+
+  const generateClipboardString = () => {
+    return LAB_PARAMETERS.map(param => formatValue(mergedResults[param.id])).join('\n');
+  };
+
+  const handleCopy = async () => {
+    const str = generateClipboardString();
+    try {
+      await navigator.clipboard.writeText(str);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      console.error('Failed to copy', err);
+    }
+  };
+
+  return (
+    <div className="bg-white rounded-xl shadow-sm border border-slate-200 h-full flex flex-col">
+      <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50 rounded-t-xl">
+        <div className="flex items-baseline gap-2">
+          <h2 className="font-semibold text-slate-700">Зведений результат</h2>
+          {fragmentCount > 0 && (
+            <span className="text-xs font-medium text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full">
+              {fragmentCount} фрагм.
+            </span>
+          )}
+        </div>
+        <button
+          onClick={handleCopy}
+          className={`px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 flex items-center gap-2 ${
+            copied
+              ? "bg-green-100 text-green-700 border border-green-200"
+              : "bg-blue-600 text-white hover:bg-blue-700 shadow-md hover:shadow-lg"
+          }`}
+        >
+          {copied ? (
+            <>
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+              </svg>
+              Скопійовано
+            </>
+          ) : (
+            <>
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" />
+              </svg>
+              Копіювати
+            </>
+          )}
+        </button>
+      </div>
+
+      <div className="p-0 overflow-auto flex-1 bg-slate-50/50">
+        <table className="w-full text-sm text-left">
+          <thead className="text-xs text-slate-500 uppercase bg-slate-100 sticky top-0">
+            <tr>
+              <th className="px-4 py-3 w-2/3">Показник</th>
+              <th className="px-4 py-3 w-1/3 text-right">Значення (Excel)</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {LAB_PARAMETERS.map((param) => {
+              const rawValue = mergedResults[param.id];
+              const formattedValue = formatValue(rawValue);
+              const hasValue = formattedValue !== '';
+
+              return (
+                <tr key={param.id} className={hasValue ? "bg-blue-50/30" : "bg-white"}>
+                  <td className="px-4 py-2 text-slate-600 font-medium whitespace-nowrap overflow-hidden text-ellipsis" title={param.label}>
+                    {param.label}
+                  </td>
+                  <td className="px-4 py-2 text-right font-mono text-slate-800">
+                    {formattedValue || <span className="text-slate-300 italic">-</span>}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      
+      <div className="p-3 text-xs text-center text-slate-400 border-t border-slate-100 bg-slate-50 rounded-b-xl">
+        Порядок відповідає вимогам. Крапки замінено на коми.
+      </div>
+    </div>
+  );
+};
