@@ -1,7 +1,9 @@
-import React, { useState, useMemo, useRef } from 'react';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { extractLabData } from './services/geminiService';
 import { ResultColumn } from './components/ResultColumn';
 import { LabResults } from './types';
+import Peer from 'peerjs';
+import QRCode from 'react-qr-code';
 
 // Icons
 const BeakerIcon = () => (
@@ -35,6 +37,18 @@ const RefreshIcon = ({ className }: { className?: string }) => (
   </svg>
 );
 
+const PhoneIcon = () => (
+  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z" />
+  </svg>
+);
+
+const PaperAirplaneIcon = () => (
+  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
+  </svg>
+);
+
 interface BatchData {
   id: number;
   text: string;
@@ -52,7 +66,89 @@ const App: React.FC = () => {
   // State to hold the new result while user decides (Merge vs Replace)
   const [pendingBatch, setPendingBatch] = useState<BatchData | null>(null);
 
+  // Sync / PeerJS State
+  const [peerId, setPeerId] = useState<string | null>(null);
+  const [connectionStatus, setConnectionStatus] = useState<'disconnected' | 'connecting' | 'connected'>('disconnected');
+  const [showQrModal, setShowQrModal] = useState(false);
+  const [isClientMode, setIsClientMode] = useState(false);
+  const peerRef = useRef<any>(null);
+  const connRef = useRef<any>(null);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Initialize PeerJS
+  useEffect(() => {
+    // Check if we are a client (phone) connecting to a host (PC)
+    const params = new URLSearchParams(window.location.search);
+    const hostId = params.get('host');
+
+    if (hostId) {
+      setIsClientMode(true);
+      setConnectionStatus('connecting');
+    }
+
+    // Create Peer
+    const peer = new Peer();
+    peerRef.current = peer;
+
+    peer.on('open', (id) => {
+      console.log('My peer ID is: ' + id);
+      setPeerId(id);
+
+      if (hostId) {
+        // We are Client: Connect to Host
+        const conn = peer.connect(hostId);
+        
+        conn.on('open', () => {
+          console.log('Connected to host!');
+          setConnectionStatus('connected');
+          connRef.current = conn;
+        });
+
+        conn.on('error', (err) => {
+          console.error('Connection error', err);
+          setConnectionStatus('disconnected');
+          setError('Не вдалося підключитися до комп\'ютера. Спробуйте оновити сторінку.');
+        });
+      }
+    });
+
+    if (!hostId) {
+      // We are Host: Listen for connections
+      peer.on('connection', (conn) => {
+        console.log('Incoming connection...');
+        conn.on('open', () => {
+           console.log('Device connected!');
+           setShowQrModal(false); // Close QR when connected
+           setConnectionStatus('connected');
+        });
+
+        conn.on('data', (data: any) => {
+          console.log('Received data:', data);
+          if (data && data.type === 'NEW_BATCH') {
+             // Handle incoming data as if local user added it
+             const newBatch = data.payload;
+             // We need to access the current state of batches. Since we are in an event listener,
+             // best to use the functional update of state or a ref.
+             // However, React state updates in event listeners are safe.
+             // We'll wrap this logic to re-use the "Pending" flow.
+             setBatches(currentBatches => {
+                if (currentBatches.length > 0) {
+                   setPendingBatch(newBatch);
+                   return currentBatches;
+                } else {
+                   return [newBatch];
+                }
+             });
+          }
+        });
+      });
+    }
+
+    return () => {
+      peer.destroy();
+    };
+  }, []);
 
   const mergedResults = useMemo(() => {
     const final: LabResults = {};
@@ -135,13 +231,19 @@ const App: React.FC = () => {
           isImage: !!selectedImage
         };
 
-        if (batches.length > 0) {
-          // If we already have data, trigger the decision modal
-          setPendingBatch(newBatch);
-        } else {
-          // If first time, just add
-          setBatches([newBatch]);
+        if (isClientMode && connectionStatus === 'connected') {
+          // Send to Host
+          connRef.current.send({ type: 'NEW_BATCH', payload: newBatch });
+          alert("Дані успішно надіслано на головний пристрій!");
           clearInputs();
+        } else {
+          // Process Locally
+          if (batches.length > 0) {
+            setPendingBatch(newBatch);
+          } else {
+            setBatches([newBatch]);
+            clearInputs();
+          }
         }
       }
     } catch (err) {
@@ -171,14 +273,54 @@ const App: React.FC = () => {
     setPendingBatch(null);
   };
 
+  const getShareUrl = () => {
+    if (!peerId) return '';
+    const url = new URL(window.location.href);
+    url.searchParams.set('host', peerId);
+    return url.toString();
+  };
+
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 p-4 md:p-8 relative">
       
-      {/* Confirmation Modal */}
+      {/* QR Code Modal */}
+      {showQrModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/80 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm p-6 border border-slate-200 relative">
+             <button onClick={() => setShowQrModal(false)} className="absolute top-4 right-4 text-slate-400 hover:text-slate-600">
+               <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+               </svg>
+             </button>
+             <h3 className="text-xl font-bold text-center text-slate-800 mb-2">Підключити телефон</h3>
+             <p className="text-center text-slate-500 text-sm mb-6">Відскануйте цей QR-код камерою телефону, щоб перетворити його на пульт сканування.</p>
+             
+             <div className="flex justify-center p-4 bg-white rounded-lg border-2 border-slate-100 mb-4">
+                {peerId ? (
+                   <div className="h-48 w-48">
+                      <QRCode value={getShareUrl()} style={{ height: "100%", width: "100%" }} viewBox={`0 0 256 256`} />
+                   </div>
+                ) : (
+                  <div className="h-48 w-48 flex items-center justify-center text-slate-400">
+                    <RefreshIcon className="w-8 h-8 animate-spin" />
+                  </div>
+                )}
+             </div>
+             
+             <div className="text-center text-xs text-slate-400 break-all px-2">
+                {peerId ? 'Очікування підключення...' : 'Ініціалізація мережі...'}
+             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Confirmation Modal (Merge/Replace) */}
       {pendingBatch && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4 animate-in fade-in duration-200">
           <div className="bg-white rounded-xl shadow-2xl w-full max-w-md p-6 border border-slate-200 scale-100 transform transition-all">
-            <h3 className="text-lg font-bold text-slate-800 mb-2">Знайдено нові дані</h3>
+            <h3 className="text-lg font-bold text-slate-800 mb-2">
+              {isClientMode ? 'Результат оброблено!' : 'Знайдено нові дані'}
+            </h3>
             <p className="text-slate-600 mb-6">
               У вашому звіті вже є {batches.length} фрагмент(ів). Що зробити з новими даними?
             </p>
@@ -220,11 +362,50 @@ const App: React.FC = () => {
               <BeakerIcon />
             </div>
             <div>
-              <h1 className="text-2xl font-bold tracking-tight text-slate-800">Lab2Excel Converter</h1>
-              <p className="text-slate-500 text-sm">Конвертація медичних аналізів у формат Excel</p>
+              <div className="flex items-center gap-2">
+                <h1 className="text-2xl font-bold tracking-tight text-slate-800">Lab2Excel</h1>
+                {isClientMode && (
+                   <span className="bg-purple-100 text-purple-700 text-xs px-2 py-0.5 rounded-full font-bold border border-purple-200">
+                     MOBILE MODE
+                   </span>
+                )}
+              </div>
+              <p className="text-slate-500 text-sm">Конвертація медичних аналізів</p>
             </div>
           </div>
-          {/* New Report button removed as requested */}
+          
+          {!isClientMode && (
+            <button
+              onClick={() => setShowQrModal(true)}
+              className={`text-sm font-medium px-4 py-2 rounded-lg transition-colors flex items-center gap-2 border ${
+                connectionStatus === 'connected' 
+                 ? "text-green-700 border-green-200 bg-green-50" 
+                 : "text-slate-600 border-slate-200 bg-white hover:bg-slate-50"
+              }`}
+            >
+              {connectionStatus === 'connected' ? (
+                <>
+                   <span className="relative flex h-2 w-2">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                      <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
+                    </span>
+                   Телефон підключено
+                </>
+              ) : (
+                <>
+                  <PhoneIcon />
+                  Підключити телефон
+                </>
+              )}
+            </button>
+          )}
+
+          {isClientMode && (
+             <div className="flex items-center gap-2 text-sm">
+                <span className={`w-2 h-2 rounded-full ${connectionStatus === 'connected' ? 'bg-green-500' : 'bg-red-500'}`}></span>
+                <span className="text-slate-600">{connectionStatus === 'connected' ? 'З\'єднано з ПК' : 'Немає з\'єднання'}</span>
+             </div>
+          )}
         </header>
 
         <main className="grid grid-cols-1 lg:grid-cols-2 gap-8">
@@ -295,11 +476,13 @@ const App: React.FC = () => {
               <div className="mt-4 flex gap-3">
                 <button
                   onClick={handleAddAndAnalyze}
-                  disabled={isProcessing || (!inputText.trim() && !selectedImage) || pendingBatch !== null}
+                  disabled={isProcessing || (!inputText.trim() && !selectedImage) || (!isClientMode && pendingBatch !== null)}
                   className={`flex-1 py-2.5 px-4 rounded-lg flex justify-center items-center gap-2 font-medium transition-all ${
-                    isProcessing || (!inputText.trim() && !selectedImage) || pendingBatch !== null
+                    isProcessing || (!inputText.trim() && !selectedImage) || (!isClientMode && pendingBatch !== null)
                       ? "bg-slate-200 text-slate-400 cursor-not-allowed"
-                      : "bg-blue-600 text-white hover:bg-blue-700 shadow-md hover:shadow-lg active:scale-[0.98]"
+                      : isClientMode && connectionStatus === 'connected'
+                        ? "bg-purple-600 text-white hover:bg-purple-700 shadow-md"
+                        : "bg-blue-600 text-white hover:bg-blue-700 shadow-md hover:shadow-lg active:scale-[0.98]"
                   }`}
                 >
                   {isProcessing ? (
@@ -307,6 +490,11 @@ const App: React.FC = () => {
                       <RefreshIcon className="animate-spin" />
                       Аналізую...
                     </>
+                  ) : isClientMode && connectionStatus === 'connected' ? (
+                     <>
+                        <PaperAirplaneIcon />
+                        Надіслати на ПК
+                     </>
                   ) : (
                     <>
                       <PlusIcon />
@@ -353,7 +541,19 @@ const App: React.FC = () => {
 
           {/* Right Column: Result Table */}
           <div className="h-full min-h-[500px]">
-            <ResultColumn mergedResults={mergedResults} fragmentCount={batches.length} />
+             {isClientMode ? (
+                <div className="bg-white rounded-xl shadow-sm border border-slate-200 h-full flex flex-col items-center justify-center p-8 text-center">
+                   <div className="bg-purple-100 p-4 rounded-full mb-4">
+                      <PhoneIcon />
+                   </div>
+                   <h2 className="text-xl font-bold text-slate-800 mb-2">Режим "Мобільний сканер"</h2>
+                   <p className="text-slate-500">
+                      Результати аналізу будуть автоматично надіслані на підключений комп'ютер. Таблиця відображається на головному екрані ПК.
+                   </p>
+                </div>
+             ) : (
+                <ResultColumn mergedResults={mergedResults} fragmentCount={batches.length} />
+             )}
           </div>
 
         </main>
