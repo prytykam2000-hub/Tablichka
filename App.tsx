@@ -49,12 +49,22 @@ const PaperAirplaneIcon = () => (
   </svg>
 );
 
+const LinkIcon = () => (
+  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+  </svg>
+);
+
 interface BatchData {
   id: number;
   text: string;
   results: LabResults;
   isImage?: boolean;
 }
+
+const generateShortId = () => {
+  return 'lab-' + Math.floor(Math.random() * 9000 + 1000);
+};
 
 const App: React.FC = () => {
   const [inputText, setInputText] = useState('');
@@ -63,92 +73,138 @@ const App: React.FC = () => {
   const [batches, setBatches] = useState<Array<BatchData>>([]);
   const [error, setError] = useState<string | null>(null);
   
-  // State to hold the new result while user decides (Merge vs Replace)
   const [pendingBatch, setPendingBatch] = useState<BatchData | null>(null);
 
   // Sync / PeerJS State
-  const [peerId, setPeerId] = useState<string | null>(null);
+  const [myPeerId, setMyPeerId] = useState<string | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<'disconnected' | 'connecting' | 'connected'>('disconnected');
   const [showQrModal, setShowQrModal] = useState(false);
   const [isClientMode, setIsClientMode] = useState(false);
-  const peerRef = useRef<any>(null);
-  const connRef = useRef<any>(null);
+  const [manualHostId, setManualHostId] = useState('');
+  const [showManualEntry, setShowManualEntry] = useState(false);
 
+  const peerInstance = useRef<any>(null);
+  const connRef = useRef<any>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Initialize PeerJS
+  // Init Peer
   useEffect(() => {
-    // Check if we are a client (phone) connecting to a host (PC)
+    // Determine mode based on URL
     const params = new URLSearchParams(window.location.search);
-    const hostId = params.get('host');
+    const hostIdFromUrl = params.get('host');
 
-    if (hostId) {
+    if (hostIdFromUrl) {
       setIsClientMode(true);
       setConnectionStatus('connecting');
-    }
-
-    // Create Peer
-    const peer = new Peer();
-    peerRef.current = peer;
-
-    peer.on('open', (id) => {
-      console.log('My peer ID is: ' + id);
-      setPeerId(id);
-
-      if (hostId) {
-        // We are Client: Connect to Host
-        const conn = peer.connect(hostId);
-        
-        conn.on('open', () => {
-          console.log('Connected to host!');
-          setConnectionStatus('connected');
-          connRef.current = conn;
-        });
-
-        conn.on('error', (err) => {
-          console.error('Connection error', err);
-          setConnectionStatus('disconnected');
-          setError('Не вдалося підключитися до комп\'ютера. Спробуйте оновити сторінку.');
-        });
-      }
-    });
-
-    if (!hostId) {
-      // We are Host: Listen for connections
-      peer.on('connection', (conn) => {
-        console.log('Incoming connection...');
-        conn.on('open', () => {
-           console.log('Device connected!');
-           setShowQrModal(false); // Close QR when connected
-           setConnectionStatus('connected');
-        });
-
-        conn.on('data', (data: any) => {
-          console.log('Received data:', data);
-          if (data && data.type === 'NEW_BATCH') {
-             // Handle incoming data as if local user added it
-             const newBatch = data.payload;
-             // We need to access the current state of batches. Since we are in an event listener,
-             // best to use the functional update of state or a ref.
-             // However, React state updates in event listeners are safe.
-             // We'll wrap this logic to re-use the "Pending" flow.
-             setBatches(currentBatches => {
-                if (currentBatches.length > 0) {
-                   setPendingBatch(newBatch);
-                   return currentBatches;
-                } else {
-                   return [newBatch];
-                }
-             });
-          }
-        });
-      });
+      initializePeer(null, hostIdFromUrl);
+    } else {
+      // Host mode: generate a random short ID
+      const randomId = generateShortId();
+      initializePeer(randomId, null);
     }
 
     return () => {
-      peer.destroy();
+      if (peerInstance.current) {
+        peerInstance.current.destroy();
+        peerInstance.current = null;
+      }
     };
   }, []);
+
+  const initializePeer = (forcedId: string | null, targetHostId: string | null) => {
+    // Avoid double init in React StrictMode
+    if (peerInstance.current) return;
+
+    const peer = new Peer(forcedId || undefined, {
+      debug: 1
+    });
+    
+    peerInstance.current = peer;
+
+    peer.on('open', (id) => {
+      console.log('My ID:', id);
+      setMyPeerId(id);
+
+      // If we are a client and have a target, connect immediately
+      if (targetHostId) {
+        connectToHost(peer, targetHostId);
+      }
+    });
+
+    peer.on('connection', (conn) => {
+      // Incoming connection (We are Host)
+      console.log('Incoming connection');
+      setupConnection(conn);
+    });
+
+    peer.on('error', (err) => {
+      console.error('Peer error:', err);
+      // If ID is taken (rare with random 4 digits but possible), retry?
+      if (err.type === 'unavailable-id') {
+         peer.destroy();
+         peerInstance.current = null;
+         initializePeer(generateShortId(), targetHostId); // Retry with new ID
+      } else {
+         setError('Помилка з\'єднання: ' + err.type);
+         setConnectionStatus('disconnected');
+      }
+    });
+
+    peer.on('disconnected', () => {
+      console.log('Peer disconnected from server');
+      // PeerJS sometimes disconnects but can reconnect.
+      // For simplicity, we just mark status.
+    });
+  };
+
+  const connectToHost = (peer: any, hostId: string) => {
+    setConnectionStatus('connecting');
+    const conn = peer.connect(hostId, { reliable: true });
+    setupConnection(conn);
+  };
+
+  const setupConnection = (conn: any) => {
+    conn.on('open', () => {
+      console.log('Connection established');
+      setConnectionStatus('connected');
+      connRef.current = conn;
+      setShowQrModal(false);
+      setShowManualEntry(false);
+    });
+
+    conn.on('data', (data: any) => {
+      console.log('Received data:', data);
+      if (data && data.type === 'NEW_BATCH') {
+         const newBatch = data.payload;
+         setBatches(currentBatches => {
+            if (currentBatches.length > 0) {
+               setPendingBatch(newBatch);
+               return currentBatches;
+            } else {
+               return [newBatch];
+            }
+         });
+      }
+    });
+
+    conn.on('close', () => {
+      console.log('Connection closed');
+      setConnectionStatus('disconnected');
+      connRef.current = null;
+    });
+
+    conn.on('error', (err: any) => {
+      console.error('Connection error', err);
+      setConnectionStatus('disconnected');
+    });
+  };
+
+  const handleManualConnect = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!manualHostId.trim() || !peerInstance.current) return;
+    setIsClientMode(true);
+    connectToHost(peerInstance.current, manualHostId.trim());
+  };
 
   const mergedResults = useMemo(() => {
     const final: LabResults = {};
@@ -231,7 +287,7 @@ const App: React.FC = () => {
           isImage: !!selectedImage
         };
 
-        if (isClientMode && connectionStatus === 'connected') {
+        if (isClientMode && connectionStatus === 'connected' && connRef.current) {
           // Send to Host
           connRef.current.send({ type: 'NEW_BATCH', payload: newBatch });
           alert("Дані успішно надіслано на головний пристрій!");
@@ -254,7 +310,6 @@ const App: React.FC = () => {
     }
   };
 
-  // Decision Modal Handlers
   const handleMerge = () => {
     if (pendingBatch) {
       setBatches(prev => [...prev, pendingBatch]);
@@ -274,47 +329,80 @@ const App: React.FC = () => {
   };
 
   const getShareUrl = () => {
-    if (!peerId) return '';
+    if (!myPeerId) return '';
     const url = new URL(window.location.href);
-    url.searchParams.set('host', peerId);
+    url.searchParams.set('host', myPeerId);
     return url.toString();
   };
+
+  const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 p-4 md:p-8 relative">
       
-      {/* QR Code Modal */}
-      {showQrModal && (
+      {/* QR Code / Connection Modal */}
+      {(showQrModal || showManualEntry) && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/80 backdrop-blur-sm p-4 animate-in fade-in duration-200">
           <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm p-6 border border-slate-200 relative">
-             <button onClick={() => setShowQrModal(false)} className="absolute top-4 right-4 text-slate-400 hover:text-slate-600">
+             <button onClick={() => { setShowQrModal(false); setShowManualEntry(false); }} className="absolute top-4 right-4 text-slate-400 hover:text-slate-600">
                <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                </svg>
              </button>
-             <h3 className="text-xl font-bold text-center text-slate-800 mb-2">Підключити телефон</h3>
-             <p className="text-center text-slate-500 text-sm mb-6">Відскануйте цей QR-код камерою телефону, щоб перетворити його на пульт сканування.</p>
-             
-             <div className="flex justify-center p-4 bg-white rounded-lg border-2 border-slate-100 mb-4">
-                {peerId ? (
-                   <div className="h-48 w-48">
-                      <QRCode value={getShareUrl()} style={{ height: "100%", width: "100%" }} viewBox={`0 0 256 256`} />
-                   </div>
-                ) : (
-                  <div className="h-48 w-48 flex items-center justify-center text-slate-400">
-                    <RefreshIcon className="w-8 h-8 animate-spin" />
+
+             {showManualEntry ? (
+               <>
+                 <h3 className="text-xl font-bold text-center text-slate-800 mb-2">Введіть код</h3>
+                 <p className="text-center text-slate-500 text-sm mb-6">Введіть код, який відображається на екрані комп'ютера.</p>
+                 <form onSubmit={handleManualConnect} className="space-y-4">
+                    <input 
+                      type="text" 
+                      value={manualHostId}
+                      onChange={e => setManualHostId(e.target.value)}
+                      placeholder="Наприклад: lab-1234"
+                      className="w-full text-center text-lg font-mono p-3 border border-slate-300 rounded-lg uppercase tracking-widest focus:ring-2 focus:ring-blue-500 outline-none"
+                    />
+                    <button type="submit" className="w-full py-3 bg-blue-600 text-white rounded-lg font-bold hover:bg-blue-700 transition-colors">
+                      {connectionStatus === 'connecting' ? 'З\'єднання...' : 'Підключитися'}
+                    </button>
+                 </form>
+               </>
+             ) : (
+               <>
+                  <h3 className="text-xl font-bold text-center text-slate-800 mb-2">Підключити телефон</h3>
+                  <p className="text-center text-slate-500 text-sm mb-4">Відскануйте QR-код або введіть код вручну.</p>
+                  
+                  {isLocalhost && (
+                    <div className="bg-amber-50 text-amber-800 p-3 rounded-lg text-xs mb-4 border border-amber-200">
+                      <strong>Увага:</strong> Ви використовуєте localhost. Для роботи QR-коду переконайтеся, що ви відкрили цей сайт на комп'ютері через локальний IP (наприклад 192.168.x.x), або введіть код вручну.
+                    </div>
+                  )}
+
+                  <div className="flex justify-center p-4 bg-white rounded-lg border-2 border-slate-100 mb-4">
+                      {myPeerId ? (
+                        <div className="h-48 w-48">
+                            <QRCode value={getShareUrl()} style={{ height: "100%", width: "100%" }} viewBox={`0 0 256 256`} />
+                        </div>
+                      ) : (
+                        <div className="h-48 w-48 flex items-center justify-center text-slate-400">
+                          <RefreshIcon className="w-8 h-8 animate-spin" />
+                        </div>
+                      )}
                   </div>
-                )}
-             </div>
-             
-             <div className="text-center text-xs text-slate-400 break-all px-2">
-                {peerId ? 'Очікування підключення...' : 'Ініціалізація мережі...'}
-             </div>
+                  
+                  <div className="text-center mb-4">
+                    <p className="text-xs text-slate-400 uppercase tracking-widest mb-1">Код підключення</p>
+                    <div className="text-2xl font-mono font-bold text-slate-800 tracking-wider select-all cursor-pointer bg-slate-100 py-2 rounded">
+                      {myPeerId || '...'}
+                    </div>
+                  </div>
+               </>
+             )}
           </div>
         </div>
       )}
 
-      {/* Confirmation Modal (Merge/Replace) */}
+      {/* Confirmation Modal */}
       {pendingBatch && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4 animate-in fade-in duration-200">
           <div className="bg-white rounded-xl shadow-2xl w-full max-w-md p-6 border border-slate-200 scale-100 transform transition-all">
@@ -374,38 +462,50 @@ const App: React.FC = () => {
             </div>
           </div>
           
-          {!isClientMode && (
-            <button
-              onClick={() => setShowQrModal(true)}
-              className={`text-sm font-medium px-4 py-2 rounded-lg transition-colors flex items-center gap-2 border ${
-                connectionStatus === 'connected' 
-                 ? "text-green-700 border-green-200 bg-green-50" 
-                 : "text-slate-600 border-slate-200 bg-white hover:bg-slate-50"
-              }`}
-            >
-              {connectionStatus === 'connected' ? (
-                <>
-                   <span className="relative flex h-2 w-2">
-                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
-                      <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
-                    </span>
-                   Телефон підключено
-                </>
-              ) : (
-                <>
-                  <PhoneIcon />
-                  Підключити телефон
-                </>
-              )}
-            </button>
-          )}
+          <div className="flex items-center gap-2">
+            {!isClientMode && (
+              <button
+                onClick={() => setShowQrModal(true)}
+                className={`text-sm font-medium px-4 py-2 rounded-lg transition-colors flex items-center gap-2 border ${
+                  connectionStatus === 'connected' 
+                  ? "text-green-700 border-green-200 bg-green-50" 
+                  : "text-slate-600 border-slate-200 bg-white hover:bg-slate-50"
+                }`}
+              >
+                {connectionStatus === 'connected' ? (
+                  <>
+                    <span className="relative flex h-2 w-2">
+                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                        <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
+                      </span>
+                    Телефон підключено
+                  </>
+                ) : (
+                  <>
+                    <PhoneIcon />
+                    Підключити телефон
+                  </>
+                )}
+              </button>
+            )}
 
-          {isClientMode && (
-             <div className="flex items-center gap-2 text-sm">
-                <span className={`w-2 h-2 rounded-full ${connectionStatus === 'connected' ? 'bg-green-500' : 'bg-red-500'}`}></span>
-                <span className="text-slate-600">{connectionStatus === 'connected' ? 'З\'єднано з ПК' : 'Немає з\'єднання'}</span>
-             </div>
-          )}
+            {/* Button to manually enter code if on phone but not connected via URL */}
+            {!isClientMode && connectionStatus !== 'connected' && (
+              <button 
+                onClick={() => setShowManualEntry(true)}
+                className="md:hidden text-sm font-medium px-3 py-2 rounded-lg bg-slate-100 text-slate-600 border border-slate-200"
+              >
+                Ввести код
+              </button>
+            )}
+
+            {isClientMode && (
+              <div className="flex items-center gap-2 text-sm">
+                  <span className={`w-2 h-2 rounded-full ${connectionStatus === 'connected' ? 'bg-green-500' : 'bg-red-500'}`}></span>
+                  <span className="text-slate-600">{connectionStatus === 'connected' ? 'З\'єднано з ПК' : 'Немає з\'єднання'}</span>
+              </div>
+            )}
+          </div>
         </header>
 
         <main className="grid grid-cols-1 lg:grid-cols-2 gap-8">
