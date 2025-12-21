@@ -62,13 +62,20 @@ interface BatchData {
   isImage?: boolean;
 }
 
+interface ImageFile {
+  id: string;
+  data: string;
+  mimeType: string;
+  preview: string;
+}
+
 const generateShortId = () => {
   return 'lab-' + Math.floor(Math.random() * 9000 + 1000);
 };
 
 const App: React.FC = () => {
   const [inputText, setInputText] = useState('');
-  const [selectedImage, setSelectedImage] = useState<{ data: string; mimeType: string; preview: string } | null>(null);
+  const [selectedImages, setSelectedImages] = useState<ImageFile[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [batches, setBatches] = useState<Array<BatchData>>([]);
   const [error, setError] = useState<string | null>(null);
@@ -241,61 +248,84 @@ const App: React.FC = () => {
     return final;
   }, [batches]);
 
-  const processFile = (file: File) => {
-    if (!file.type.startsWith('image/')) {
-      setError('Будь ласка, оберіть файл зображення');
-      return;
+  const processFiles = (files: FileList) => {
+    const validFiles = Array.from(files).filter(f => f.type.startsWith('image/'));
+    
+    if (validFiles.length === 0) {
+        if (files.length > 0) setError('Будь ласка, оберіть файли зображень');
+        return;
     }
 
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      const base64String = (event.target?.result as string).split(',')[1];
-      setSelectedImage({
-        data: base64String,
-        mimeType: file.type,
-        preview: event.target?.result as string
-      });
-      setError(null);
-    };
-    reader.readAsDataURL(file);
+    Promise.all(validFiles.map(file => {
+        return new Promise<ImageFile>((resolve) => {
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const base64 = (e.target?.result as string).split(',')[1];
+                resolve({
+                    id: Math.random().toString(36).substring(7),
+                    data: base64,
+                    mimeType: file.type,
+                    preview: e.target?.result as string
+                });
+            };
+            reader.readAsDataURL(file);
+        });
+    })).then(newImages => {
+        setSelectedImages(prev => [...prev, ...newImages]);
+        setError(null);
+    });
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) processFile(file);
+    if (e.target.files && e.target.files.length > 0) {
+      processFiles(e.target.files);
+    }
+    // reset input to allow re-selecting same files
+    if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
   const handlePaste = (e: React.ClipboardEvent) => {
     const items = e.clipboardData.items;
+    const files: File[] = [];
     for (let i = 0; i < items.length; i++) {
       if (items[i].type.indexOf('image') !== -1) {
         const file = items[i].getAsFile();
-        if (file) {
-          e.preventDefault(); 
-          processFile(file);
-          return;
-        }
+        if (file) files.push(file);
       }
     }
+    if (files.length > 0) {
+      e.preventDefault();
+      // create a FileList-like object or just adjust processFiles to accept array
+      // Simplest is to construct a DataTransfer
+      const dt = new DataTransfer();
+      files.forEach(f => dt.items.add(f));
+      processFiles(dt.files);
+    }
+  };
+
+  const removeImage = (id: string) => {
+    setSelectedImages(prev => prev.filter(img => img.id !== id));
   };
 
   const clearInputs = () => {
     setInputText(''); 
-    setSelectedImage(null);
+    setSelectedImages([]);
     if (fileInputRef.current) fileInputRef.current.value = '';
     setPendingBatch(null);
   };
 
   const handleAddAndAnalyze = async () => {
-    if (!inputText.trim() && !selectedImage) return;
+    if (!inputText.trim() && selectedImages.length === 0) return;
 
     setIsProcessing(true);
     setError(null);
 
     try {
+      const imagesPayload = selectedImages.map(img => ({ data: img.data, mimeType: img.mimeType }));
+
       const results = await extractLabData(
         inputText, 
-        selectedImage ? { data: selectedImage.data, mimeType: selectedImage.mimeType } : undefined
+        imagesPayload.length > 0 ? imagesPayload : undefined
       );
       
       const foundCount = Object.values(results).filter(v => v !== null && v !== '').length;
@@ -303,11 +333,16 @@ const App: React.FC = () => {
       if (foundCount === 0) {
         setError("Не вдалося знайти жодного показника. Спробуйте інше фото або перевірте текст.");
       } else {
+        let labelText = inputText;
+        if (selectedImages.length > 0) {
+          labelText = selectedImages.length === 1 ? "Аналіз фото" : `Аналіз ${selectedImages.length} фото`;
+        }
+
         const newBatch = {
           id: Date.now(),
-          text: selectedImage ? "Аналіз по фото" : inputText,
+          text: labelText,
           results: results,
-          isImage: !!selectedImage
+          isImage: selectedImages.length > 0
         };
 
         if (isClientMode && connectionStatus === 'connected' && connRef.current) {
@@ -562,7 +597,7 @@ const App: React.FC = () => {
                   className="text-xs font-medium text-blue-600 hover:text-blue-700 flex items-center gap-1.5 px-2 py-1 rounded bg-blue-50 transition-colors"
                 >
                   <PhotoIcon />
-                  Обрати фото
+                  {selectedImages.length > 0 ? 'Додати ще фото' : 'Обрати фото'}
                 </button>
                 <input 
                   type="file" 
@@ -570,25 +605,32 @@ const App: React.FC = () => {
                   onChange={handleFileChange} 
                   accept="image/*" 
                   className="hidden" 
+                  multiple
                 />
               </div>
 
-              {selectedImage && (
-                <div className="mb-3 relative group">
-                  <div className="w-full h-32 overflow-hidden rounded-lg border-2 border-blue-200">
-                    <img src={selectedImage.preview} alt="Preview" className="w-full h-full object-cover" />
-                  </div>
+              {selectedImages.length > 0 && (
+                <div className="mb-3 grid grid-cols-3 sm:grid-cols-4 gap-2">
+                  {selectedImages.map((img) => (
+                    <div key={img.id} className="relative group aspect-square rounded-lg border-2 border-blue-200 overflow-hidden bg-slate-100">
+                       <img src={img.preview} alt="Preview" className="w-full h-full object-cover" />
+                       <button 
+                        onClick={() => removeImage(img.id)}
+                        className="absolute top-1 right-1 bg-red-500 text-white rounded-full p-0.5 shadow hover:bg-red-600 transition-colors opacity-0 group-hover:opacity-100 md:opacity-100"
+                      >
+                         <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                         </svg>
+                      </button>
+                    </div>
+                  ))}
                   <button 
-                    onClick={() => setSelectedImage(null)}
-                    className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full p-1 shadow-lg hover:bg-red-600 transition-colors"
+                     onClick={() => fileInputRef.current?.click()}
+                     className="aspect-square flex flex-col items-center justify-center border-2 border-dashed border-slate-300 rounded-lg text-slate-400 hover:border-blue-400 hover:text-blue-500 hover:bg-slate-50 transition-all"
                   >
-                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                    </svg>
+                     <PlusIcon />
+                     <span className="text-[10px] font-medium mt-1">Додати</span>
                   </button>
-                  <div className="absolute bottom-2 left-2 bg-blue-600 text-white text-[10px] px-2 py-0.5 rounded-full uppercase font-bold tracking-wider">
-                    Зображення готове
-                  </div>
                 </div>
               )}
 
@@ -614,9 +656,9 @@ const App: React.FC = () => {
               <div className="mt-4 flex gap-3">
                 <button
                   onClick={handleAddAndAnalyze}
-                  disabled={isProcessing || (!inputText.trim() && !selectedImage) || (!isClientMode && pendingBatch !== null)}
+                  disabled={isProcessing || (!inputText.trim() && selectedImages.length === 0) || (!isClientMode && pendingBatch !== null)}
                   className={`flex-1 py-2.5 px-4 rounded-lg flex justify-center items-center gap-2 font-medium transition-all ${
-                    isProcessing || (!inputText.trim() && !selectedImage) || (!isClientMode && pendingBatch !== null)
+                    isProcessing || (!inputText.trim() && selectedImages.length === 0) || (!isClientMode && pendingBatch !== null)
                       ? "bg-slate-200 text-slate-400 cursor-not-allowed"
                       : isClientMode && connectionStatus === 'connected'
                         ? "bg-purple-600 text-white hover:bg-purple-700 shadow-md"
