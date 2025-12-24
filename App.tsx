@@ -159,7 +159,6 @@ const App: React.FC = () => {
       if (date === today) {
         setRemainingConversions(Math.max(0, DAILY_LIMIT - used));
       } else {
-        // New day, reset
         localStorage.setItem('lab2excel_usage', JSON.stringify({ date: today, used: 0 }));
         setRemainingConversions(DAILY_LIMIT);
       }
@@ -181,8 +180,10 @@ const App: React.FC = () => {
       usedCount = 1;
     }
     
-    localStorage.setItem('lab2excel_usage', JSON.stringify({ date: today, used: usedCount }));
+    const newStats = { date: today, used: usedCount };
+    localStorage.setItem('lab2excel_usage', JSON.stringify(newStats));
     setRemainingConversions(Math.max(0, DAILY_LIMIT - usedCount));
+    return newStats;
   };
 
   // Init Peer
@@ -292,6 +293,13 @@ const App: React.FC = () => {
     conn.on('data', (data: any) => {
       if (data && data.type === 'NEW_BATCH') {
          const newBatch = data.payload;
+         
+         // Sync usage if provided by mobile client
+         if (data.usage) {
+           localStorage.setItem('lab2excel_usage', JSON.stringify(data.usage));
+           setRemainingConversions(Math.max(0, DAILY_LIMIT - data.usage.used));
+         }
+
          setBatches(currentBatches => {
             if (currentBatches.length > 0) {
                setPendingBatch(newBatch);
@@ -442,7 +450,8 @@ const App: React.FC = () => {
       if (foundCount === 0) {
         setError("Не вдалося знайти показників.");
       } else {
-        trackUsage(); // Decrease conversion counter
+        const usageStats = trackUsage(); // Decrease conversion counter and get stats
+        
         let labelText = inputText;
         if (selectedImages.length > 0) {
           labelText = selectedImages.length === 1 ? "Аналіз фото" : `Аналіз ${selectedImages.length} фото`;
@@ -457,7 +466,12 @@ const App: React.FC = () => {
 
         if (isClientMode) {
           if (connRef.current && connRef.current.open) {
-            connRef.current.send({ type: 'NEW_BATCH', payload: newBatch });
+            // Send new batch AND updated usage stats for synchronization
+            connRef.current.send({ 
+              type: 'NEW_BATCH', 
+              payload: newBatch,
+              usage: usageStats
+            });
             alert("Надіслано на ПК!");
             clearInputs();
           } else {
