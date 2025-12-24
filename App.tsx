@@ -544,8 +544,13 @@ const App: React.FC = () => {
 
                   <div className="flex justify-center p-4 bg-white rounded-lg border-2 border-slate-100 mb-4">
                       {myPeerId ? (
-                        <div className="h-48 w-48">
-                            <QRCode value={getShareUrl()} style={{ height: "100%", width: "100%" }} viewBox={`0 0 256 256`} />
+                        <div className="h-48 w-48 flex items-center justify-center">
+                            {/* Updated QRCode with simplified props to prevent rendering crashes */}
+                            <QRCode 
+                                value={getShareUrl()} 
+                                size={192}
+                                style={{ height: "100%", width: "100%" }} 
+                            />
                         </div>
                       ) : (
                         <div className="h-48 w-48 flex items-center justify-center text-slate-400">
