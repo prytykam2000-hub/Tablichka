@@ -105,8 +105,8 @@ const resizeAndCompressImage = (file: File): Promise<ImageFile> => {
         const ctx = canvas.getContext('2d');
         ctx?.drawImage(img, 0, 0, width, height);
         
-        // Compress to JPEG with 0.7 quality to reduce base64 string size significantly
-        const dataUrl = canvas.toDataURL('image/jpeg', 0.7);
+        // Compress to JPEG with 0.6 quality to reduce base64 string size significantly
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.6);
         
         resolve({
           id: Math.random().toString(36).substring(7),
@@ -231,7 +231,8 @@ const App: React.FC = () => {
           setConnectionStatus('disconnected');
           // Don't error loudly if we are just backgrounding
       } else {
-         setError('Помилка з\'єднання: ' + err.type);
+         // Suppress connection alerts to avoid spamming the user on unstable mobile networks
+         console.warn('Network error: ' + err.type);
          setConnectionStatus('disconnected');
       }
     });
@@ -240,7 +241,12 @@ const App: React.FC = () => {
       console.log('Peer disconnected from server');
       // If we are client and didn't mean to disconnect, try to reconnect to the signalling server
       if (isClientMode && !isIntentionalDisconnectRef.current) {
-        peer.reconnect();
+        // Wait a bit before reconnecting peer to avoid thrashing
+        setTimeout(() => {
+             if (peerInstance.current && !peerInstance.current.destroyed) {
+                peer.reconnect();
+             }
+        }, 2000);
       }
     });
   };
@@ -264,7 +270,11 @@ const App: React.FC = () => {
     
     // If peer is disconnected from server, reconnect peer first
     if (peerInstance.current.disconnected) {
-        await peerInstance.current.reconnect();
+        try {
+            await peerInstance.current.reconnect();
+        } catch (e) {
+            console.warn("Peer reconnect failed", e);
+        }
     }
     
     console.log("Reconnecting to", targetHostIdRef.current);
@@ -300,20 +310,11 @@ const App: React.FC = () => {
       console.log('Connection closed');
       connRef.current = null;
       
-      // Only set UI to disconnected if it wasn't an intentional action
-      // This helps prevent "flickering" UI if we reconnect immediately
       if (isIntentionalDisconnectRef.current) {
           setConnectionStatus('disconnected');
       } else {
-          // If we are client, we might want to stay in 'connecting' state or try reconnect
-          if (isClientMode) {
-             console.log("Unexpected close, status remains: ", connectionStatus);
-             // Optionally trigger reconnect here immediately
-             // reconnectToHost(); 
-             setConnectionStatus('disconnected');
-          } else {
-             setConnectionStatus('disconnected');
-          }
+          // Silent disconnect state, auto-reconnect logic handles the rest
+          setConnectionStatus('disconnected');
       }
     });
 
@@ -380,6 +381,7 @@ const App: React.FC = () => {
     setIsCompressing(true);
     setError(null);
 
+    // Reverted to Promise.all for faster processing as requested
     try {
       const processedImages = await Promise.all(
         validFiles.map(file => resizeAndCompressImage(file))
@@ -394,8 +396,9 @@ const App: React.FC = () => {
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files.length > 0) {
-      processFiles(e.target.files);
+    const files = e.target.files;
+    if (files && files.length > 0) {
+      processFiles(files);
     }
     // reset input to allow re-selecting same files
     if (fileInputRef.current) fileInputRef.current.value = '';
@@ -452,7 +455,7 @@ const App: React.FC = () => {
                  clearInterval(interval);
                  resolve();
               }
-              if (attempts > 20) { // 2 seconds timeout
+              if (attempts > 30) { // 3 seconds timeout
                  clearInterval(interval);
                  reject("Timeout connecting");
               }
@@ -511,9 +514,22 @@ const App: React.FC = () => {
           }
         }
       }
-    } catch (err) {
-      setError("Помилка обробки. Перевірте з'єднання або спробуйте ще раз.");
-      console.error(err);
+    } catch (err: any) {
+      console.error("Error details:", err);
+      let errorMessage = "Помилка обробки. Перевірте з'єднання або спробуйте ще раз.";
+      
+      // Try to extract more specific info
+      const errStr = (err?.message || err?.toString() || "").toLowerCase();
+      
+      if (errStr.includes("429") || errStr.includes("quota") || errStr.includes("resource exhausted")) {
+        errorMessage = "Вичерпано ліміт безкоштовних запитів (429). Будь ласка, зачекайте хвилину і спробуйте знову.";
+      } else if (errStr.includes("503") || errStr.includes("service unavailable") || errStr.includes("overloaded")) {
+         errorMessage = "Сервер ШІ тимчасово перевантажений (503). Спробуйте ще раз через 10 секунд.";
+      } else if (errStr.includes("candidate") || errStr.includes("safety") || errStr.includes("blocked")) {
+         errorMessage = "ШІ заблокував відповідь через налаштування безпеки. Спробуйте інше фото або текст.";
+      }
+
+      setError(errorMessage);
     } finally {
       setIsProcessing(false);
     }
