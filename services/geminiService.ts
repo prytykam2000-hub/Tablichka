@@ -70,7 +70,7 @@ Return the result strictly as a JSON object matching the schema.`;
 
   try {
     const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
+      model: "gemini-1.5-flash",
       contents: [{ role: "user", parts }],
       config: {
         responseMimeType: "application/json",
