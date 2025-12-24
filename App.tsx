@@ -55,6 +55,12 @@ const XMarkIcon = () => (
   </svg>
 );
 
+const ZapIcon = ({ className }: { className?: string }) => (
+  <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+  </svg>
+);
+
 interface BatchData {
   id: number;
   text: string;
@@ -69,11 +75,12 @@ interface ImageFile {
   preview: string;
 }
 
+const DAILY_LIMIT = 20;
+
 const generateShortId = () => {
   return 'lab-' + Math.floor(Math.random() * 9000 + 1000);
 };
 
-// Utility to resize and compress images to prevent memory issues
 const resizeAndCompressImage = (file: File): Promise<ImageFile> => {
   return new Promise((resolve) => {
     const reader = new FileReader();
@@ -83,7 +90,6 @@ const resizeAndCompressImage = (file: File): Promise<ImageFile> => {
       img.src = event.target?.result as string;
       img.onload = () => {
         const canvas = document.createElement('canvas');
-        // Limit max dimension to 1280px (sufficient for OCR)
         const MAX_DIMENSION = 1280; 
         let width = img.width;
         let height = img.height;
@@ -104,8 +110,6 @@ const resizeAndCompressImage = (file: File): Promise<ImageFile> => {
         canvas.height = height;
         const ctx = canvas.getContext('2d');
         ctx?.drawImage(img, 0, 0, width, height);
-        
-        // Compress to JPEG with 0.6 quality to reduce base64 string size significantly
         const dataUrl = canvas.toDataURL('image/jpeg', 0.6);
         
         resolve({
@@ -126,6 +130,7 @@ const App: React.FC = () => {
   const [batches, setBatches] = useState<Array<BatchData>>([]);
   const [error, setError] = useState<string | null>(null);
   const [isCompressing, setIsCompressing] = useState(false);
+  const [remainingConversions, setRemainingConversions] = useState(DAILY_LIMIT);
   
   const [pendingBatch, setPendingBatch] = useState<BatchData | null>(null);
 
@@ -144,9 +149,44 @@ const App: React.FC = () => {
   const targetHostIdRef = useRef<string | null>(null);
   const isIntentionalDisconnectRef = useRef<boolean>(false);
 
+  // Daily Usage Tracking
+  useEffect(() => {
+    const today = new Date().toLocaleDateString();
+    const storedStats = localStorage.getItem('lab2excel_usage');
+    
+    if (storedStats) {
+      const { date, used } = JSON.parse(storedStats);
+      if (date === today) {
+        setRemainingConversions(Math.max(0, DAILY_LIMIT - used));
+      } else {
+        // New day, reset
+        localStorage.setItem('lab2excel_usage', JSON.stringify({ date: today, used: 0 }));
+        setRemainingConversions(DAILY_LIMIT);
+      }
+    } else {
+      localStorage.setItem('lab2excel_usage', JSON.stringify({ date: today, used: 0 }));
+      setRemainingConversions(DAILY_LIMIT);
+    }
+  }, []);
+
+  const trackUsage = () => {
+    const today = new Date().toLocaleDateString();
+    const storedStats = localStorage.getItem('lab2excel_usage');
+    let usedCount = 0;
+    
+    if (storedStats) {
+      const stats = JSON.parse(storedStats);
+      usedCount = stats.date === today ? stats.used + 1 : 1;
+    } else {
+      usedCount = 1;
+    }
+    
+    localStorage.setItem('lab2excel_usage', JSON.stringify({ date: today, used: usedCount }));
+    setRemainingConversions(Math.max(0, DAILY_LIMIT - usedCount));
+  };
+
   // Init Peer
   useEffect(() => {
-    // Determine mode based on URL
     const params = new URLSearchParams(window.location.search);
     const hostIdFromUrl = params.get('host');
 
@@ -156,7 +196,6 @@ const App: React.FC = () => {
       targetHostIdRef.current = hostIdFromUrl;
       initializePeer(null, hostIdFromUrl);
     } else {
-      // Host mode: generate a random short ID
       const randomId = generateShortId();
       initializePeer(randomId, null);
     }
@@ -169,18 +208,16 @@ const App: React.FC = () => {
     };
   }, []);
 
-  // Listener for tab visibility (Camera app return)
+  // Listener for tab visibility
   useEffect(() => {
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
-        // If we are a client, suppose to be connected, but current status is disconnected/closed
         if (
           isClientMode && 
           targetHostIdRef.current && 
           !isIntentionalDisconnectRef.current &&
           (!connRef.current || !connRef.current.open || connectionStatus !== 'connected')
         ) {
-          console.log("App visible again, attempting auto-reconnect...");
           reconnectToHost();
         }
       }
@@ -192,56 +229,31 @@ const App: React.FC = () => {
     };
   }, [isClientMode, connectionStatus]);
 
-
   const initializePeer = (forcedId: string | null, targetHostId: string | null) => {
-    // Avoid double init in React StrictMode
     if (peerInstance.current) return;
-
-    const peer = new Peer(forcedId || undefined, {
-      debug: 1
-    });
-    
+    const peer = new Peer(forcedId || undefined, { debug: 1 });
     peerInstance.current = peer;
 
     peer.on('open', (id) => {
-      console.log('My ID:', id);
       setMyPeerId(id);
-
-      // If we are a client and have a target, connect immediately
-      if (targetHostId) {
-        connectToHost(peer, targetHostId);
-      }
+      if (targetHostId) connectToHost(peer, targetHostId);
     });
 
-    peer.on('connection', (conn) => {
-      // Incoming connection (We are Host)
-      console.log('Incoming connection');
-      setupConnection(conn);
-    });
+    peer.on('connection', (conn) => setupConnection(conn));
 
     peer.on('error', (err) => {
       console.error('Peer error:', err);
-      // If ID is taken, retry?
       if (err.type === 'unavailable-id') {
          peer.destroy();
          peerInstance.current = null;
-         initializePeer(generateShortId(), targetHostId); // Retry with new ID
-      } else if (err.type === 'peer-unavailable') {
-          // Host might be gone, or we just have bad network
-          setConnectionStatus('disconnected');
-          // Don't error loudly if we are just backgrounding
+         initializePeer(generateShortId(), targetHostId);
       } else {
-         // Suppress connection alerts to avoid spamming the user on unstable mobile networks
-         console.warn('Network error: ' + err.type);
          setConnectionStatus('disconnected');
       }
     });
 
     peer.on('disconnected', () => {
-      console.log('Peer disconnected from server');
-      // If we are client and didn't mean to disconnect, try to reconnect to the signalling server
       if (isClientMode && !isIntentionalDisconnectRef.current) {
-        // Wait a bit before reconnecting peer to avoid thrashing
         setTimeout(() => {
              if (peerInstance.current && !peerInstance.current.destroyed) {
                 peer.reconnect();
@@ -255,35 +267,21 @@ const App: React.FC = () => {
     setConnectionStatus('connecting');
     isIntentionalDisconnectRef.current = false;
     targetHostIdRef.current = hostId;
-    
-    // Close existing if any
-    if (connRef.current) {
-      connRef.current.close();
-    }
-
+    if (connRef.current) connRef.current.close();
     const conn = peer.connect(hostId, { reliable: true });
     setupConnection(conn);
   };
 
   const reconnectToHost = async () => {
     if (!peerInstance.current || !targetHostIdRef.current) return;
-    
-    // If peer is disconnected from server, reconnect peer first
     if (peerInstance.current.disconnected) {
-        try {
-            await peerInstance.current.reconnect();
-        } catch (e) {
-            console.warn("Peer reconnect failed", e);
-        }
+        try { await peerInstance.current.reconnect(); } catch (e) {}
     }
-    
-    console.log("Reconnecting to", targetHostIdRef.current);
     connectToHost(peerInstance.current, targetHostIdRef.current);
   };
 
   const setupConnection = (conn: any) => {
     conn.on('open', () => {
-      console.log('Connection established');
       setConnectionStatus('connected');
       connRef.current = conn;
       setShowQrModal(false);
@@ -292,7 +290,6 @@ const App: React.FC = () => {
     });
 
     conn.on('data', (data: any) => {
-      console.log('Received data:', data);
       if (data && data.type === 'NEW_BATCH') {
          const newBatch = data.payload;
          setBatches(currentBatches => {
@@ -307,47 +304,29 @@ const App: React.FC = () => {
     });
 
     conn.on('close', () => {
-      console.log('Connection closed');
       connRef.current = null;
-      
-      if (isIntentionalDisconnectRef.current) {
-          setConnectionStatus('disconnected');
-      } else {
-          // Silent disconnect state, auto-reconnect logic handles the rest
-          setConnectionStatus('disconnected');
-      }
-    });
-
-    conn.on('error', (err: any) => {
-      console.error('Connection error', err);
       setConnectionStatus('disconnected');
     });
+
+    conn.on('error', () => setConnectionStatus('disconnected'));
   };
 
   const handleDisconnect = () => {
     isIntentionalDisconnectRef.current = true;
-    if (connRef.current) {
-      connRef.current.close();
-    }
+    if (connRef.current) connRef.current.close();
     setConnectionStatus('disconnected');
     targetHostIdRef.current = null;
     
-    // If we were client mode, remove the ?host param from URL to go back to standalone/host mode capabilities
     if (isClientMode) {
       setIsClientMode(false);
       const url = new URL(window.location.href);
       url.searchParams.delete('host');
       window.history.pushState({}, '', url.toString());
-      
-      // We might want to re-init as a random host
       if (peerInstance.current) {
         peerInstance.current.destroy();
         peerInstance.current = null;
       }
-      setTimeout(() => {
-        const randomId = generateShortId();
-        initializePeer(randomId, null);
-      }, 500);
+      setTimeout(() => initializePeer(generateShortId(), null), 500);
     }
   };
 
@@ -372,23 +351,18 @@ const App: React.FC = () => {
 
   const processFiles = async (files: FileList) => {
     const validFiles = Array.from(files).filter(f => f.type.startsWith('image/'));
-    
     if (validFiles.length === 0) {
         if (files.length > 0) setError('Будь ласка, оберіть файли зображень');
         return;
     }
-
     setIsCompressing(true);
     setError(null);
-
-    // Reverted to Promise.all for faster processing as requested
     try {
       const processedImages = await Promise.all(
         validFiles.map(file => resizeAndCompressImage(file))
       );
       setSelectedImages(prev => [...prev, ...processedImages]);
     } catch (e) {
-      console.error("Error processing images", e);
       setError("Помилка обробки зображення. Спробуйте ще раз.");
     } finally {
       setIsCompressing(false);
@@ -397,10 +371,7 @@ const App: React.FC = () => {
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
-    if (files && files.length > 0) {
-      processFiles(files);
-    }
-    // reset input to allow re-selecting same files
+    if (files && files.length > 0) processFiles(files);
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
@@ -415,8 +386,6 @@ const App: React.FC = () => {
     }
     if (files.length > 0) {
       e.preventDefault();
-      // create a FileList-like object or just adjust processFiles to accept array
-      // Simplest is to construct a DataTransfer
       const dt = new DataTransfer();
       files.forEach(f => dt.items.add(f));
       processFiles(dt.files);
@@ -436,34 +405,28 @@ const App: React.FC = () => {
 
   const handleAddAndAnalyze = async () => {
     if (!inputText.trim() && selectedImages.length === 0) return;
+    if (remainingConversions <= 0) {
+        setError("Ви вичерпали денний ліміт (20/20). Повертайтеся завтра!");
+        return;
+    }
 
     setIsProcessing(true);
     setError(null);
 
-    // If client mode, check connection before starting processing
     if (isClientMode && (!connRef.current || !connRef.current.open)) {
-      console.log("Connection lost, attempting to reconnect before processing...");
       setConnectionStatus('connecting');
       try {
         await reconnectToHost();
-        // Wait a bit for connection to open
         await new Promise<void>((resolve, reject) => {
            let attempts = 0;
            const interval = setInterval(() => {
               attempts++;
-              if (connRef.current && connRef.current.open) {
-                 clearInterval(interval);
-                 resolve();
-              }
-              if (attempts > 30) { // 3 seconds timeout
-                 clearInterval(interval);
-                 reject("Timeout connecting");
-              }
+              if (connRef.current && connRef.current.open) { clearInterval(interval); resolve(); }
+              if (attempts > 30) { clearInterval(interval); reject("Timeout"); }
            }, 100);
         });
       } catch (e) {
-         console.error("Failed to reconnect before sending", e);
-         setError("Втрачено зв'язок з комп'ютером. Спробуйте оновити сторінку або перепідключитися.");
+         setError("Втрачено зв'язок з ПК.");
          setIsProcessing(false);
          setConnectionStatus('disconnected');
          return;
@@ -472,17 +435,14 @@ const App: React.FC = () => {
 
     try {
       const imagesPayload = selectedImages.map(img => ({ data: img.data, mimeType: img.mimeType }));
-
-      const results = await extractLabData(
-        inputText, 
-        imagesPayload.length > 0 ? imagesPayload : undefined
-      );
+      const results = await extractLabData(inputText, imagesPayload.length > 0 ? imagesPayload : undefined);
       
       const foundCount = Object.values(results).filter(v => v !== null && v !== '').length;
 
       if (foundCount === 0) {
-        setError("Не вдалося знайти жодного показника. Спробуйте інше фото або перевірте текст.");
+        setError("Не вдалося знайти показників.");
       } else {
+        trackUsage(); // Decrease conversion counter
         let labelText = inputText;
         if (selectedImages.length > 0) {
           labelText = selectedImages.length === 1 ? "Аналіз фото" : `Аналіз ${selectedImages.length} фото`;
@@ -498,14 +458,12 @@ const App: React.FC = () => {
         if (isClientMode) {
           if (connRef.current && connRef.current.open) {
             connRef.current.send({ type: 'NEW_BATCH', payload: newBatch });
-            alert("Дані успішно надіслано на головний пристрій!");
+            alert("Надіслано на ПК!");
             clearInputs();
           } else {
-             // Fallback if reconnection appeared to work but then failed
-             setError("Зв'язок нестабільний. Не вдалося надіслати дані.");
+             setError("Зв'язок нестабільний.");
           }
         } else {
-          // Process Locally
           if (batches.length > 0) {
             setPendingBatch(newBatch);
           } else {
@@ -515,20 +473,9 @@ const App: React.FC = () => {
         }
       }
     } catch (err: any) {
-      console.error("Error details:", err);
-      let errorMessage = "Помилка обробки. Перевірте з'єднання або спробуйте ще раз.";
-      
-      // Try to extract more specific info
+      let errorMessage = "Помилка обробки. Перевірте з'єднання.";
       const errStr = (err?.message || err?.toString() || "").toLowerCase();
-      
-      if (errStr.includes("429") || errStr.includes("quota") || errStr.includes("resource exhausted")) {
-        errorMessage = "Вичерпано ліміт безкоштовних запитів (429). Будь ласка, зачекайте хвилину і спробуйте знову.";
-      } else if (errStr.includes("503") || errStr.includes("service unavailable") || errStr.includes("overloaded")) {
-         errorMessage = "Сервер ШІ тимчасово перевантажений (503). Спробуйте ще раз через 10 секунд.";
-      } else if (errStr.includes("candidate") || errStr.includes("safety") || errStr.includes("blocked")) {
-         errorMessage = "ШІ заблокував відповідь через налаштування безпеки. Спробуйте інше фото або текст.";
-      }
-
+      if (errStr.includes("429")) errorMessage = "Вичерпано ліміт API. Спробуйте через хвилину.";
       setError(errorMessage);
     } finally {
       setIsProcessing(false);
@@ -549,9 +496,7 @@ const App: React.FC = () => {
     }
   };
 
-  const handleCancel = () => {
-    setPendingBatch(null);
-  };
+  const handleCancel = () => setPendingBatch(null);
 
   const getShareUrl = () => {
     if (!myPeerId) return '';
@@ -565,9 +510,9 @@ const App: React.FC = () => {
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 p-4 md:p-8 relative">
       
-      {/* QR Code / Connection Modal */}
+      {/* QR Modal */}
       {(showQrModal || showManualEntry) && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/80 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/80 backdrop-blur-sm p-4">
           <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm p-6 border border-slate-200 relative">
              <button onClick={() => { setShowQrModal(false); setShowManualEntry(false); }} className="absolute top-4 right-4 text-slate-400 hover:text-slate-600">
                <XMarkIcon />
@@ -576,16 +521,15 @@ const App: React.FC = () => {
              {showManualEntry ? (
                <>
                  <h3 className="text-xl font-bold text-center text-slate-800 mb-2">Введіть код</h3>
-                 <p className="text-center text-slate-500 text-sm mb-6">Введіть код, який відображається на екрані комп'ютера.</p>
                  <form onSubmit={handleManualConnect} className="space-y-4">
                     <input 
                       type="text" 
                       value={manualHostId}
                       onChange={e => setManualHostId(e.target.value)}
                       placeholder="Наприклад: lab-1234"
-                      className="w-full text-center text-lg font-mono p-3 border border-slate-300 rounded-lg uppercase tracking-widest focus:ring-2 focus:ring-blue-500 outline-none"
+                      className="w-full text-center text-lg font-mono p-3 border border-slate-300 rounded-lg uppercase"
                     />
-                    <button type="submit" className="w-full py-3 bg-blue-600 text-white rounded-lg font-bold hover:bg-blue-700 transition-colors">
+                    <button type="submit" className="w-full py-3 bg-blue-600 text-white rounded-lg font-bold">
                       {connectionStatus === 'connecting' ? 'З\'єднання...' : 'Підключитися'}
                     </button>
                  </form>
@@ -593,34 +537,18 @@ const App: React.FC = () => {
              ) : (
                <>
                   <h3 className="text-xl font-bold text-center text-slate-800 mb-2">Підключити телефон</h3>
-                  <p className="text-center text-slate-500 text-sm mb-4">Відскануйте QR-код або введіть код вручну.</p>
-                  
-                  {isLocalhost && (
-                    <div className="bg-amber-50 text-amber-800 p-3 rounded-lg text-xs mb-4 border border-amber-200">
-                      <strong>Увага:</strong> Ви використовуєте localhost. Для роботи QR-коду переконайтеся, що ви відкрили цей сайт на комп'ютері через локальний IP (наприклад 192.168.x.x), або введіть код вручну.
-                    </div>
-                  )}
-
                   <div className="flex justify-center p-4 bg-white rounded-lg border-2 border-slate-100 mb-4">
                       {myPeerId ? (
-                        <div className="h-48 w-48 flex items-center justify-center">
-                            {/* Updated QRCode with simplified props to prevent rendering crashes */}
-                            <QRCode 
-                                value={getShareUrl()} 
-                                size={192}
-                                style={{ height: "100%", width: "100%" }} 
-                            />
+                        <div className="h-48 w-48">
+                            <QRCode value={getShareUrl()} size={192} style={{ height: "100%", width: "100%" }} />
                         </div>
                       ) : (
-                        <div className="h-48 w-48 flex items-center justify-center text-slate-400">
-                          <RefreshIcon className="w-8 h-8 animate-spin" />
-                        </div>
+                        <RefreshIcon className="w-8 h-8 animate-spin" />
                       )}
                   </div>
-                  
                   <div className="text-center mb-4">
-                    <p className="text-xs text-slate-400 uppercase tracking-widest mb-1">Код підключення</p>
-                    <div className="text-2xl font-mono font-bold text-slate-800 tracking-wider select-all cursor-pointer bg-slate-100 py-2 rounded">
+                    <p className="text-xs text-slate-400 uppercase mb-1">Код підключення</p>
+                    <div className="text-2xl font-mono font-bold text-slate-800 bg-slate-100 py-2 rounded">
                       {myPeerId || '...'}
                     </div>
                   </div>
@@ -632,46 +560,24 @@ const App: React.FC = () => {
 
       {/* Confirmation Modal */}
       {pendingBatch && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4 animate-in fade-in duration-200">
-          <div className="bg-white rounded-xl shadow-2xl w-full max-w-md p-6 border border-slate-200 scale-100 transform transition-all">
-            <h3 className="text-lg font-bold text-slate-800 mb-2">
-              {isClientMode ? 'Результат оброблено!' : 'Знайдено нові дані'}
-            </h3>
-            <p className="text-slate-600 mb-6">
-              У вашому звіті вже є {batches.length} фрагмент(ів). Що зробити з новими даними?
-            </p>
-            
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-md p-6 border border-slate-200">
+            <h3 className="text-lg font-bold text-slate-800 mb-2">Знайдено нові дані</h3>
+            <p className="text-slate-600 mb-6">У звіті вже є {batches.length} фрагмент(ів). Додати нові дані?</p>
             <div className="flex flex-col gap-3">
-              <button
-                onClick={handleMerge}
-                className="w-full py-3 px-4 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium shadow-md transition-all flex items-center justify-center gap-2"
-              >
-                <PlusIcon />
-                Додати до існуючого звіту
+              <button onClick={handleMerge} className="w-full py-3 px-4 bg-blue-600 text-white rounded-lg font-medium shadow-md flex items-center justify-center gap-2">
+                <PlusIcon /> Додати до існуючого звіту
               </button>
-              
-              <button
-                onClick={handleReplace}
-                className="w-full py-3 px-4 bg-white border-2 border-slate-200 hover:border-red-200 hover:bg-red-50 text-slate-700 hover:text-red-600 rounded-lg font-medium transition-all flex items-center justify-center gap-2"
-              >
-                <TrashIcon />
-                Почати новий звіт (замінити)
+              <button onClick={handleReplace} className="w-full py-3 px-4 bg-white border-2 border-slate-200 text-slate-700 rounded-lg font-medium flex items-center justify-center gap-2">
+                <TrashIcon /> Почати новий звіт
               </button>
-              
-              <button
-                onClick={handleCancel}
-                className="mt-2 text-sm text-slate-400 hover:text-slate-600 font-medium"
-              >
-                Скасувати
-              </button>
+              <button onClick={handleCancel} className="mt-2 text-sm text-slate-400 font-medium">Скасувати</button>
             </div>
           </div>
         </div>
       )}
 
       <div className="max-w-6xl mx-auto space-y-6">
-        
-        {/* Header */}
         <header className="flex flex-col md:flex-row justify-between items-center gap-4 pb-6 border-b border-slate-200">
           <div className="flex items-center gap-3">
             <div className="p-2 bg-blue-600 rounded-lg text-white shadow-lg">
@@ -681,10 +587,13 @@ const App: React.FC = () => {
               <div className="flex items-center gap-2">
                 <h1 className="text-2xl font-bold tracking-tight text-slate-800">Lab2Excel</h1>
                 {isClientMode && (
-                   <span className="bg-purple-100 text-purple-700 text-xs px-2 py-0.5 rounded-full font-bold border border-purple-200">
-                     MOBILE MODE
-                   </span>
+                   <span className="bg-purple-100 text-purple-700 text-xs px-2 py-0.5 rounded-full font-bold border border-purple-200">MOBILE</span>
                 )}
+                {/* Usage Counter Badge */}
+                <div className={`flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-bold border ${remainingConversions <= 3 ? 'bg-red-50 text-red-600 border-red-200' : 'bg-blue-50 text-blue-700 border-blue-200'}`}>
+                  <ZapIcon className="w-3 h-3" />
+                  <span>{remainingConversions}/{DAILY_LIMIT}</span>
+                </div>
               </div>
               <p className="text-slate-500 text-sm">Конвертація медичних аналізів</p>
             </div>
@@ -696,197 +605,94 @@ const App: React.FC = () => {
                 onClick={connectionStatus === 'connected' ? handleDisconnect : () => setShowQrModal(true)}
                 className={`text-sm font-medium px-4 py-2 rounded-lg transition-all flex items-center gap-2 border group ${
                   connectionStatus === 'connected' 
-                  ? "text-green-700 border-green-200 bg-green-50 hover:bg-red-50 hover:text-red-600 hover:border-red-200" 
+                  ? "text-green-700 border-green-200 bg-green-50" 
                   : "text-slate-600 border-slate-200 bg-white hover:bg-slate-50"
                 }`}
-                title={connectionStatus === 'connected' ? "Натисніть, щоб відключити телефон" : ""}
               >
-                {connectionStatus === 'connected' ? (
-                  <>
-                    <span className="group-hover:hidden flex items-center gap-2">
-                      <span className="relative flex h-2 w-2">
-                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
-                          <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
-                      </span>
-                      Телефон підключено
-                    </span>
-                    <span className="hidden group-hover:flex items-center gap-2">
-                      <XMarkIcon />
-                      Відключити
-                    </span>
-                  </>
-                ) : (
-                  <>
-                    <PhoneIcon />
-                    Підключити телефон
-                  </>
-                )}
+                {connectionStatus === 'connected' ? "Телефон підключено" : <><PhoneIcon /> Підключити телефон</>}
               </button>
             )}
-
-            {/* Button to manually enter code if on phone but not connected via URL */}
-            {!isClientMode && connectionStatus !== 'connected' && (
-              <button 
-                onClick={() => setShowManualEntry(true)}
-                className="md:hidden text-sm font-medium px-3 py-2 rounded-lg bg-slate-100 text-slate-600 border border-slate-200"
-              >
-                Ввести код
-              </button>
-            )}
-
             {isClientMode && (
               <div className="flex items-center gap-3">
-                  <div className="flex items-center gap-2 text-sm">
-                    <span className={`w-2 h-2 rounded-full ${connectionStatus === 'connected' ? 'bg-green-500' : 'bg-red-500'}`}></span>
-                    <span className="text-slate-600">
-                        {connectionStatus === 'connected' ? 'З\'єднано з ПК' : 
-                         connectionStatus === 'connecting' ? 'Відновлення...' : 'Немає з\'єднання'}
-                    </span>
-                  </div>
-                  {connectionStatus === 'connected' && (
-                    <button 
-                      onClick={handleDisconnect}
-                      className="text-xs bg-white border border-slate-200 px-2 py-1 rounded text-slate-500 hover:text-red-500 hover:border-red-200"
-                    >
-                      Відключитися
-                    </button>
-                  )}
+                  <span className={`w-2 h-2 rounded-full ${connectionStatus === 'connected' ? 'bg-green-500' : 'bg-red-500'}`}></span>
+                  <span className="text-sm text-slate-600">{connectionStatus === 'connected' ? 'З\'єднано' : 'Немає з\'єднання'}</span>
               </div>
             )}
           </div>
         </header>
 
         <main className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-          
-          {/* Left Column: Input & History */}
           <div className="flex flex-col gap-6">
-            
-            {/* Input Section */}
             <div className="bg-white p-5 rounded-xl shadow-sm border border-slate-200">
               <div className="flex justify-between items-center mb-2">
-                <label htmlFor="labInput" className="block text-sm font-semibold text-slate-700">
-                  Введіть текст або додайте фото
-                </label>
-                <button 
-                  onClick={() => fileInputRef.current?.click()}
-                  className="text-xs font-medium text-blue-600 hover:text-blue-700 flex items-center gap-1.5 px-2 py-1 rounded bg-blue-50 transition-colors"
-                >
-                  <PhotoIcon />
-                  {selectedImages.length > 0 ? 'Додати ще фото' : 'Обрати фото'}
+                <label className="block text-sm font-semibold text-slate-700">Введіть текст або додайте фото</label>
+                <button onClick={() => fileInputRef.current?.click()} className="text-xs font-medium text-blue-600 hover:text-blue-700 flex items-center gap-1.5 px-2 py-1 rounded bg-blue-50">
+                  <PhotoIcon /> {selectedImages.length > 0 ? 'Додати ще' : 'Обрати фото'}
                 </button>
-                <input 
-                  type="file" 
-                  ref={fileInputRef} 
-                  onChange={handleFileChange} 
-                  accept="image/*" 
-                  className="hidden" 
-                  multiple
-                />
+                <input type="file" ref={fileInputRef} onChange={handleFileChange} accept="image/*" className="hidden" multiple />
               </div>
 
               {selectedImages.length > 0 && (
                 <div className="mb-3 grid grid-cols-3 sm:grid-cols-4 gap-2">
                   {selectedImages.map((img) => (
-                    <div key={img.id} className="relative group aspect-square rounded-lg border-2 border-blue-200 overflow-hidden bg-slate-100">
-                       <img src={img.preview} alt="Preview" className="w-full h-full object-cover" />
-                       <button 
-                        onClick={() => removeImage(img.id)}
-                        className="absolute top-1 right-1 bg-red-500 text-white rounded-full p-0.5 shadow hover:bg-red-600 transition-colors opacity-0 group-hover:opacity-100 md:opacity-100"
-                      >
-                         <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                         </svg>
-                      </button>
+                    <div key={img.id} className="relative group aspect-square rounded-lg border-2 border-blue-200 overflow-hidden">
+                       <img src={img.preview} className="w-full h-full object-cover" />
+                       <button onClick={() => removeImage(img.id)} className="absolute top-1 right-1 bg-red-500 text-white rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                         <XMarkIcon />
+                       </button>
                     </div>
                   ))}
-                  <button 
-                     onClick={() => fileInputRef.current?.click()}
-                     className="aspect-square flex flex-col items-center justify-center border-2 border-dashed border-slate-300 rounded-lg text-slate-400 hover:border-blue-400 hover:text-blue-500 hover:bg-slate-50 transition-all"
-                  >
-                     <PlusIcon />
-                     <span className="text-[10px] font-medium mt-1">Додати</span>
-                  </button>
                 </div>
               )}
 
               <textarea
-                id="labInput"
                 value={inputText}
                 onChange={(e) => setInputText(e.target.value)}
                 onPaste={handlePaste}
-                placeholder="Вставте текст сюди (наприклад: Гемоглобін 135) або натисніть Ctrl+V, щоб вставити скріншот з буфера..."
-                className="w-full h-32 p-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-slate-50 resize-none text-slate-700 placeholder:text-slate-400 transition-all"
+                placeholder="Вставте текст сюди..."
+                className="w-full h-32 p-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 bg-slate-50 resize-none"
                 disabled={isProcessing}
               />
               
               {error && (
-                <div className="mt-2 text-sm text-red-600 bg-red-50 p-2 rounded border border-red-100 flex items-start gap-2">
-                  <svg className="w-5 h-5 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                  </svg>
+                <div className="mt-2 text-sm text-red-600 bg-red-50 p-2 rounded border border-red-100 flex items-center gap-2">
                   <span>{error}</span>
                 </div>
               )}
 
-              <div className="mt-4 flex gap-3">
+              <div className="mt-4">
                 <button
                   onClick={handleAddAndAnalyze}
-                  disabled={isProcessing || isCompressing || (!inputText.trim() && selectedImages.length === 0) || (!isClientMode && pendingBatch !== null)}
-                  className={`flex-1 py-2.5 px-4 rounded-lg flex justify-center items-center gap-2 font-medium transition-all ${
-                    isProcessing || isCompressing || (!inputText.trim() && selectedImages.length === 0) || (!isClientMode && pendingBatch !== null)
+                  disabled={isProcessing || isCompressing || (!inputText.trim() && selectedImages.length === 0) || remainingConversions <= 0}
+                  className={`w-full py-2.5 px-4 rounded-lg flex justify-center items-center gap-2 font-medium transition-all ${
+                    isProcessing || isCompressing || (!inputText.trim() && selectedImages.length === 0) || remainingConversions <= 0
                       ? "bg-slate-200 text-slate-400 cursor-not-allowed"
-                      : isClientMode && connectionStatus === 'connected'
-                        ? "bg-purple-600 text-white hover:bg-purple-700 shadow-md"
-                        : "bg-blue-600 text-white hover:bg-blue-700 shadow-md hover:shadow-lg active:scale-[0.98]"
+                      : "bg-blue-600 text-white hover:bg-blue-700 shadow-md"
                   }`}
                 >
-                  {isProcessing || isCompressing ? (
-                    <>
-                      <RefreshIcon className="animate-spin" />
-                      {isCompressing ? 'Обробка фото...' : 'Аналізую...'}
-                    </>
-                  ) : isClientMode ? (
-                     <>
-                        <PaperAirplaneIcon />
-                        {connectionStatus === 'connected' ? 'Надіслати на ПК' : 'З\'єднати і надіслати'}
-                     </>
-                  ) : (
-                    <>
-                      <PlusIcon />
-                      Додати до звіту
-                    </>
-                  )}
+                  {isProcessing ? <RefreshIcon className="animate-spin" /> : <><PlusIcon /> Додати до звіту</>}
                 </button>
+                {remainingConversions <= 3 && remainingConversions > 0 && (
+                  <p className="mt-2 text-[10px] text-amber-600 font-medium text-center">
+                    Увага! Залишилося лише {remainingConversions} конверсій на сьогодні.
+                  </p>
+                )}
               </div>
             </div>
 
-            {/* Added Batches List */}
             {batches.length > 0 && (
-              <div className="bg-white p-5 rounded-xl shadow-sm border border-slate-200 flex flex-col gap-4">
-                <div className="flex justify-between items-center border-b border-slate-100 pb-2">
-                  <h3 className="text-sm font-semibold text-slate-700">Додані тексти та фото ({batches.length})</h3>
-                </div>
-                
+              <div className="bg-white p-5 rounded-xl shadow-sm border border-slate-200">
+                <h3 className="text-sm font-semibold text-slate-700 mb-3 border-b pb-2">Додані фрагменти ({batches.length})</h3>
                 <div className="space-y-3 max-h-[300px] overflow-y-auto pr-2 custom-scrollbar">
                   {batches.map((batch, index) => (
                     <div key={batch.id} className="p-3 bg-slate-50 rounded-lg border border-slate-100 text-sm group relative">
                       <div className="flex justify-between items-start mb-1">
-                        <div className="flex items-center gap-2">
-                           <div className="font-medium text-slate-500 text-xs uppercase tracking-wider">Фрагмент {index + 1}</div>
-                           {batch.isImage && <span className="bg-blue-100 text-blue-700 text-[10px] px-1.5 py-0.5 rounded font-bold">ФОТО</span>}
-                        </div>
-                        <button 
-                          onClick={() => setBatches(prev => prev.filter(b => b.id !== batch.id))}
-                          className="text-slate-400 hover:text-red-500 transition-colors p-1 -mr-1"
-                          title="Видалити"
-                        >
+                        <div className="font-medium text-slate-500 text-xs uppercase">Фрагмент {index + 1}</div>
+                        <button onClick={() => setBatches(prev => prev.filter(b => b.id !== batch.id))} className="text-slate-400 hover:text-red-500">
                            <TrashIcon />
                         </button>
                       </div>
                       <p className="text-slate-700 line-clamp-2 italic">{batch.text}</p>
-                      <div className="mt-2 text-xs text-blue-600 font-medium">
-                        Розпізнано: {Object.values(batch.results).filter(v => v !== null && v !== '').length} показників
-                      </div>
                     </div>
                   ))}
                 </div>
@@ -894,23 +700,17 @@ const App: React.FC = () => {
             )}
           </div>
 
-          {/* Right Column: Result Table */}
           <div className="h-full min-h-[500px]">
              {isClientMode ? (
                 <div className="bg-white rounded-xl shadow-sm border border-slate-200 h-full flex flex-col items-center justify-center p-8 text-center">
-                   <div className="bg-purple-100 p-4 rounded-full mb-4">
-                      <PhoneIcon />
-                   </div>
-                   <h2 className="text-xl font-bold text-slate-800 mb-2">Режим "Мобільний сканер"</h2>
-                   <p className="text-slate-500">
-                      Результати аналізу будуть автоматично надіслані на підключений комп'ютер. Таблиця відображається на головному екрані ПК.
-                   </p>
+                   <div className="bg-purple-100 p-4 rounded-full mb-4"><PhoneIcon /></div>
+                   <h2 className="text-xl font-bold text-slate-800 mb-2">Мобільний сканер</h2>
+                   <p className="text-slate-500">Результати автоматично надсилаються на ПК.</p>
                 </div>
              ) : (
                 <ResultColumn mergedResults={mergedResults} fragmentCount={batches.length} />
              )}
           </div>
-
         </main>
       </div>
     </div>
