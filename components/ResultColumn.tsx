@@ -12,10 +12,12 @@ interface CategoryConfig {
   title: string;
 }
 
+// Order strictly defined: CBC -> Biochemistry -> Coagulation -> Other
 const CATEGORIES: CategoryConfig[] = [
   { id: 'cbc', title: 'Загальний аналіз крові' },
+  { id: 'biochemistry', title: 'Біохімія' },
   { id: 'coagulation', title: 'Коагулограма' },
-  { id: 'biochemistry', title: 'Біохімія та інше' },
+  { id: 'other', title: 'Інше' },
 ];
 
 export const ResultColumn: React.FC<ResultColumnProps> = ({ mergedResults, fragmentCount }) => {
@@ -45,13 +47,12 @@ export const ResultColumn: React.FC<ResultColumnProps> = ({ mergedResults, fragm
       return CATEGORIES;
     }
 
-    // Return only categories that have data
+    // Return only categories that have data, strictly preserving the CATEGORIES order
     return CATEGORIES.filter(cat => active.has(cat.id));
   }, [mergedResults]);
 
   const generateClipboardString = () => {
     // We iterate through ACTIVE categories only.
-    // This implies that if a category is hidden, its rows are NOT copied.
     let clipboardText = '';
     
     activeCategories.forEach((cat, index) => {
@@ -60,12 +61,7 @@ export const ResultColumn: React.FC<ResultColumnProps> = ({ mergedResults, fragm
       
       clipboardText += catText;
       
-      // Add a newline between blocks if there are multiple active blocks?
-      // Usually for Excel pasting, if the blocks are separate in Excel, the user copies one block at a time.
-      // If the user wants to copy ALL to one long column, we need a joiner.
-      // However, the prompt says "without skipping other indicators in column" which implies
-      // if I have Coag only, I get 5 numbers. I paste them into the Coag section.
-      // If I have CBC + Coag, I get CBC numbers [newline] Coag numbers.
+      // Add a newline between blocks if there are multiple active blocks
       if (index < activeCategories.length - 1) {
         clipboardText += '\n';
       }
@@ -168,7 +164,7 @@ export const ResultColumn: React.FC<ResultColumnProps> = ({ mergedResults, fragm
       </div>
       
       <div className="p-3 text-xs text-center text-slate-400 border-t border-slate-100 bg-slate-50 rounded-b-xl">
-        Порядок відповідає категоріям. Порожні категорії приховані.
+        Порядок: Загальний аналіз крові → Біохімія → Коагулограма → Інше
       </div>
     </div>
   );

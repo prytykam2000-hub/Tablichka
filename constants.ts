@@ -1,6 +1,6 @@
 import { LabParameter } from './types';
 
-// The strict order defined in the requirements, now categorized
+// Order: CBC -> Biochemistry -> Coagulation -> Procalcitonin (Other)
 export const LAB_PARAMETERS: LabParameter[] = [
   // --- Загальний аналіз крові (CBC) ---
   { id: 'leukocytes', label: 'Лейкоцити (WBC)', category: 'cbc' },
@@ -10,12 +10,7 @@ export const LAB_PARAMETERS: LabParameter[] = [
   { id: 'platelets', label: 'Тромбоцити (PLT)', category: 'cbc' },
   { id: 'esr', label: 'ШОЕ (ESR)', category: 'cbc' },
 
-  // --- Коагулограма (Coagulation) ---
-  // Moved up or down? The user asked to split. I will keep the relative order of items but group them.
-  // Based on standard forms, Coagulation is often separate.
-  // However, to maintain the specific *id* order requested previously within groups:
-  
-  // --- Біохімія та інше (Biochemistry) ---
+  // --- Біохімія (Biochemistry) ---
   { id: 'bilirubin_total', label: 'Білірубін загальний', category: 'biochemistry' },
   { id: 'alt', label: 'АЛТ (ALT)', category: 'biochemistry' },
   { id: 'ast', label: 'АСТ (AST)', category: 'biochemistry' },
@@ -30,15 +25,14 @@ export const LAB_PARAMETERS: LabParameter[] = [
   { id: 'chlorine', label: 'Хлор (Cl-)', category: 'biochemistry' },
   { id: 'crp', label: 'CRP (C-реактивний білок)', category: 'biochemistry' },
   { id: 'albumin', label: 'Альбумін', category: 'biochemistry' },
-  
-  // Coagulation items were mixed in the previous list or at the end. 
-  // I will group them specifically as requested.
+
+  // --- Коагулограма (Coagulation) ---
   { id: 'prothrombin_time', label: 'Протромбіновий час', category: 'coagulation' },
   { id: 'inr', label: 'МНО (INR)', category: 'coagulation' },
   { id: 'prothrombin_quick', label: 'Протромбін по Квіку', category: 'coagulation' },
   { id: 'fibrinogen', label: 'Фібриноген', category: 'coagulation' },
   { id: 'aptt', label: 'АЧТЧ (APTT)', category: 'coagulation' },
   
-  // Back to others
-  { id: 'procalcitonin', label: 'Прокальцитонін', category: 'biochemistry' },
+  // --- Інше (Other) ---
+  { id: 'procalcitonin', label: 'Прокальцитонін', category: 'other' },
 ];

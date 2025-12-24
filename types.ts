@@ -1,4 +1,4 @@
-export type LabCategory = 'cbc' | 'coagulation' | 'biochemistry';
+export type LabCategory = 'cbc' | 'biochemistry' | 'coagulation' | 'other';
 
 export interface LabParameter {
   id: string;
