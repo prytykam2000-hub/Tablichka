@@ -73,12 +73,59 @@ const generateShortId = () => {
   return 'lab-' + Math.floor(Math.random() * 9000 + 1000);
 };
 
+// Utility to resize and compress images to prevent memory issues
+const resizeAndCompressImage = (file: File): Promise<ImageFile> => {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.readAsDataURL(file);
+    reader.onload = (event) => {
+      const img = new Image();
+      img.src = event.target?.result as string;
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        // Limit max dimension to 1280px (sufficient for OCR)
+        const MAX_DIMENSION = 1280; 
+        let width = img.width;
+        let height = img.height;
+
+        if (width > height) {
+          if (width > MAX_DIMENSION) {
+            height *= MAX_DIMENSION / width;
+            width = MAX_DIMENSION;
+          }
+        } else {
+          if (height > MAX_DIMENSION) {
+            width *= MAX_DIMENSION / height;
+            height = MAX_DIMENSION;
+          }
+        }
+
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        ctx?.drawImage(img, 0, 0, width, height);
+        
+        // Compress to JPEG with 0.7 quality to reduce base64 string size significantly
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.7);
+        
+        resolve({
+          id: Math.random().toString(36).substring(7),
+          data: dataUrl.split(',')[1],
+          mimeType: 'image/jpeg',
+          preview: dataUrl
+        });
+      };
+    };
+  });
+};
+
 const App: React.FC = () => {
   const [inputText, setInputText] = useState('');
   const [selectedImages, setSelectedImages] = useState<ImageFile[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [batches, setBatches] = useState<Array<BatchData>>([]);
   const [error, setError] = useState<string | null>(null);
+  const [isCompressing, setIsCompressing] = useState(false);
   
   const [pendingBatch, setPendingBatch] = useState<BatchData | null>(null);
 
@@ -322,7 +369,7 @@ const App: React.FC = () => {
     return final;
   }, [batches]);
 
-  const processFiles = (files: FileList) => {
+  const processFiles = async (files: FileList) => {
     const validFiles = Array.from(files).filter(f => f.type.startsWith('image/'));
     
     if (validFiles.length === 0) {
@@ -330,24 +377,20 @@ const App: React.FC = () => {
         return;
     }
 
-    Promise.all(validFiles.map(file => {
-        return new Promise<ImageFile>((resolve) => {
-            const reader = new FileReader();
-            reader.onload = (e) => {
-                const base64 = (e.target?.result as string).split(',')[1];
-                resolve({
-                    id: Math.random().toString(36).substring(7),
-                    data: base64,
-                    mimeType: file.type,
-                    preview: e.target?.result as string
-                });
-            };
-            reader.readAsDataURL(file);
-        });
-    })).then(newImages => {
-        setSelectedImages(prev => [...prev, ...newImages]);
-        setError(null);
-    });
+    setIsCompressing(true);
+    setError(null);
+
+    try {
+      const processedImages = await Promise.all(
+        validFiles.map(file => resizeAndCompressImage(file))
+      );
+      setSelectedImages(prev => [...prev, ...processedImages]);
+    } catch (e) {
+      console.error("Error processing images", e);
+      setError("Помилка обробки зображення. Спробуйте ще раз.");
+    } finally {
+      setIsCompressing(false);
+    }
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -772,19 +815,19 @@ const App: React.FC = () => {
               <div className="mt-4 flex gap-3">
                 <button
                   onClick={handleAddAndAnalyze}
-                  disabled={isProcessing || (!inputText.trim() && selectedImages.length === 0) || (!isClientMode && pendingBatch !== null)}
+                  disabled={isProcessing || isCompressing || (!inputText.trim() && selectedImages.length === 0) || (!isClientMode && pendingBatch !== null)}
                   className={`flex-1 py-2.5 px-4 rounded-lg flex justify-center items-center gap-2 font-medium transition-all ${
-                    isProcessing || (!inputText.trim() && selectedImages.length === 0) || (!isClientMode && pendingBatch !== null)
+                    isProcessing || isCompressing || (!inputText.trim() && selectedImages.length === 0) || (!isClientMode && pendingBatch !== null)
                       ? "bg-slate-200 text-slate-400 cursor-not-allowed"
                       : isClientMode && connectionStatus === 'connected'
                         ? "bg-purple-600 text-white hover:bg-purple-700 shadow-md"
                         : "bg-blue-600 text-white hover:bg-blue-700 shadow-md hover:shadow-lg active:scale-[0.98]"
                   }`}
                 >
-                  {isProcessing ? (
+                  {isProcessing || isCompressing ? (
                     <>
                       <RefreshIcon className="animate-spin" />
-                      Аналізую...
+                      {isCompressing ? 'Обробка фото...' : 'Аналізую...'}
                     </>
                   ) : isClientMode ? (
                      <>
