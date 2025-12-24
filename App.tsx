@@ -105,8 +105,8 @@ const resizeAndCompressImage = (file: File): Promise<ImageFile> => {
         const ctx = canvas.getContext('2d');
         ctx?.drawImage(img, 0, 0, width, height);
         
-        // Compress to JPEG with 0.6 quality to reduce base64 string size significantly
-        const dataUrl = canvas.toDataURL('image/jpeg', 0.6);
+        // Compress to JPEG with 0.7 quality to reduce base64 string size significantly
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.7);
         
         resolve({
           id: Math.random().toString(36).substring(7),
@@ -173,19 +173,16 @@ const App: React.FC = () => {
   useEffect(() => {
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
-        // Delay reconnection slightly to allow the OS to resume the browser process fully
-        // This prevents "App not responding" when returning from heavy camera usage
-        setTimeout(() => {
-          if (
-            isClientMode && 
-            targetHostIdRef.current && 
-            !isIntentionalDisconnectRef.current &&
-            (!connRef.current || !connRef.current.open || connectionStatus !== 'connected')
-          ) {
-            console.log("App visible again, attempting auto-reconnect...");
-            reconnectToHost();
-          }
-        }, 1200);
+        // If we are a client, suppose to be connected, but current status is disconnected/closed
+        if (
+          isClientMode && 
+          targetHostIdRef.current && 
+          !isIntentionalDisconnectRef.current &&
+          (!connRef.current || !connRef.current.open || connectionStatus !== 'connected')
+        ) {
+          console.log("App visible again, attempting auto-reconnect...");
+          reconnectToHost();
+        }
       }
     };
 
@@ -234,8 +231,7 @@ const App: React.FC = () => {
           setConnectionStatus('disconnected');
           // Don't error loudly if we are just backgrounding
       } else {
-         // Suppress connection alerts to avoid spamming the user on unstable mobile networks
-         console.warn('Network error: ' + err.type);
+         setError('Помилка з\'єднання: ' + err.type);
          setConnectionStatus('disconnected');
       }
     });
@@ -244,12 +240,7 @@ const App: React.FC = () => {
       console.log('Peer disconnected from server');
       // If we are client and didn't mean to disconnect, try to reconnect to the signalling server
       if (isClientMode && !isIntentionalDisconnectRef.current) {
-        // Wait a bit before reconnecting peer to avoid thrashing
-        setTimeout(() => {
-             if (peerInstance.current && !peerInstance.current.destroyed) {
-                peer.reconnect();
-             }
-        }, 2000);
+        peer.reconnect();
       }
     });
   };
@@ -273,11 +264,7 @@ const App: React.FC = () => {
     
     // If peer is disconnected from server, reconnect peer first
     if (peerInstance.current.disconnected) {
-        try {
-            await peerInstance.current.reconnect();
-        } catch (e) {
-            console.warn("Peer reconnect failed", e);
-        }
+        await peerInstance.current.reconnect();
     }
     
     console.log("Reconnecting to", targetHostIdRef.current);
@@ -313,11 +300,20 @@ const App: React.FC = () => {
       console.log('Connection closed');
       connRef.current = null;
       
+      // Only set UI to disconnected if it wasn't an intentional action
+      // This helps prevent "flickering" UI if we reconnect immediately
       if (isIntentionalDisconnectRef.current) {
           setConnectionStatus('disconnected');
       } else {
-          // Silent disconnect state, auto-reconnect logic handles the rest
-          setConnectionStatus('disconnected');
+          // If we are client, we might want to stay in 'connecting' state or try reconnect
+          if (isClientMode) {
+             console.log("Unexpected close, status remains: ", connectionStatus);
+             // Optionally trigger reconnect here immediately
+             // reconnectToHost(); 
+             setConnectionStatus('disconnected');
+          } else {
+             setConnectionStatus('disconnected');
+          }
       }
     });
 
@@ -384,20 +380,11 @@ const App: React.FC = () => {
     setIsCompressing(true);
     setError(null);
 
-    // SEQUENTIAL PROCESSING
-    // This is critical for mobile devices. Processing concurrently freezes the UI
-    // and triggers "App not responding" warnings from the OS.
     try {
-      const processed: ImageFile[] = [];
-      
-      for (const file of validFiles) {
-         // Yield to main thread to keep UI responsive
-         await new Promise(resolve => setTimeout(resolve, 50)); 
-         const img = await resizeAndCompressImage(file);
-         processed.push(img);
-      }
-      
-      setSelectedImages(prev => [...prev, ...processed]);
+      const processedImages = await Promise.all(
+        validFiles.map(file => resizeAndCompressImage(file))
+      );
+      setSelectedImages(prev => [...prev, ...processedImages]);
     } catch (e) {
       console.error("Error processing images", e);
       setError("Помилка обробки зображення. Спробуйте ще раз.");
@@ -407,13 +394,8 @@ const App: React.FC = () => {
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (files && files.length > 0) {
-      // Small delay before starting processing to allow the browser to 
-      // render the file input change and return control from the OS camera intent.
-      setTimeout(() => {
-          processFiles(files);
-      }, 300);
+    if (e.target.files && e.target.files.length > 0) {
+      processFiles(e.target.files);
     }
     // reset input to allow re-selecting same files
     if (fileInputRef.current) fileInputRef.current.value = '';
@@ -470,7 +452,7 @@ const App: React.FC = () => {
                  clearInterval(interval);
                  resolve();
               }
-              if (attempts > 30) { // 3 seconds timeout
+              if (attempts > 20) { // 2 seconds timeout
                  clearInterval(interval);
                  reject("Timeout connecting");
               }
@@ -529,22 +511,9 @@ const App: React.FC = () => {
           }
         }
       }
-    } catch (err: any) {
-      console.error("Error details:", err);
-      let errorMessage = "Помилка обробки. Перевірте з'єднання або спробуйте ще раз.";
-      
-      // Try to extract more specific info
-      const errStr = (err?.message || err?.toString() || "").toLowerCase();
-      
-      if (errStr.includes("429") || errStr.includes("quota") || errStr.includes("resource exhausted")) {
-        errorMessage = "Вичерпано ліміт безкоштовних запитів (429). Будь ласка, зачекайте хвилину і спробуйте знову.";
-      } else if (errStr.includes("503") || errStr.includes("service unavailable") || errStr.includes("overloaded")) {
-         errorMessage = "Сервер ШІ тимчасово перевантажений (503). Спробуйте ще раз через 10 секунд.";
-      } else if (errStr.includes("candidate") || errStr.includes("safety") || errStr.includes("blocked")) {
-         errorMessage = "ШІ заблокував відповідь через налаштування безпеки. Спробуйте інше фото або текст.";
-      }
-
-      setError(errorMessage);
+    } catch (err) {
+      setError("Помилка обробки. Перевірте з'єднання або спробуйте ще раз.");
+      console.error(err);
     } finally {
       setIsProcessing(false);
     }
@@ -793,9 +762,7 @@ const App: React.FC = () => {
                   type="file" 
                   ref={fileInputRef} 
                   onChange={handleFileChange} 
-                  accept="image/*"
-                  // Added capture="environment" to help OS optimize for camera input
-                  capture="environment"
+                  accept="image/*" 
                   className="hidden" 
                   multiple
                 />
