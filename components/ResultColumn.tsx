@@ -29,11 +29,12 @@ export const ResultColumn: React.FC<ResultColumnProps> = ({ mergedResults, fragm
     return val.replace('.', ',');
   };
 
-  // Determine which categories have at least one value present
+  // Determine which categories to show
   const activeCategories = useMemo(() => {
     const active = new Set<LabCategory>();
     let hasAnyData = false;
 
+    // Check which categories have data
     LAB_PARAMETERS.forEach(param => {
       const val = mergedResults[param.id];
       if (val && val !== '') {
@@ -42,17 +43,27 @@ export const ResultColumn: React.FC<ResultColumnProps> = ({ mergedResults, fragm
       }
     });
 
-    // If no data is found at all, show all categories by default (empty template)
+    // If no data is found at all, show all categories by default
     if (!hasAnyData) {
       return CATEGORIES;
     }
 
-    // Return only categories that have data, strictly preserving the CATEGORIES order
-    return CATEGORIES.filter(cat => active.has(cat.id));
+    // Find the index of the first and last category that has data
+    const activeIndices = CATEGORIES
+      .map((cat, index) => active.has(cat.id) ? index : -1)
+      .filter(index => index !== -1);
+
+    const minIndex = Math.min(...activeIndices);
+    const maxIndex = Math.max(...activeIndices);
+
+    // Return ALL categories from the first found to the last found.
+    // This ensures that if we have CBC (index 0) and Coagulation (index 2), 
+    // Biochemistry (index 1) is INCLUDED as empty rows to maintain Excel structure.
+    return CATEGORIES.filter((_, index) => index >= minIndex && index <= maxIndex);
   }, [mergedResults]);
 
   const generateClipboardString = () => {
-    // We iterate through ACTIVE categories only.
+    // We iterate through ACTIVE range categories.
     let clipboardText = '';
     
     activeCategories.forEach((cat, index) => {
@@ -61,7 +72,7 @@ export const ResultColumn: React.FC<ResultColumnProps> = ({ mergedResults, fragm
       
       clipboardText += catText;
       
-      // Add a newline between blocks if there are multiple active blocks
+      // Add a newline between blocks
       if (index < activeCategories.length - 1) {
         clipboardText += '\n';
       }
