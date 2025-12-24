@@ -1,11 +1,22 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { LAB_PARAMETERS } from '../constants';
-import { LabResults } from '../types';
+import { LabResults, LabCategory } from '../types';
 
 interface ResultColumnProps {
   mergedResults: LabResults;
   fragmentCount: number;
 }
+
+interface CategoryConfig {
+  id: LabCategory;
+  title: string;
+}
+
+const CATEGORIES: CategoryConfig[] = [
+  { id: 'cbc', title: 'Загальний аналіз крові' },
+  { id: 'coagulation', title: 'Коагулограма' },
+  { id: 'biochemistry', title: 'Біохімія та інше' },
+];
 
 export const ResultColumn: React.FC<ResultColumnProps> = ({ mergedResults, fragmentCount }) => {
   const [copied, setCopied] = useState(false);
@@ -16,8 +27,51 @@ export const ResultColumn: React.FC<ResultColumnProps> = ({ mergedResults, fragm
     return val.replace('.', ',');
   };
 
+  // Determine which categories have at least one value present
+  const activeCategories = useMemo(() => {
+    const active = new Set<LabCategory>();
+    let hasAnyData = false;
+
+    LAB_PARAMETERS.forEach(param => {
+      const val = mergedResults[param.id];
+      if (val && val !== '') {
+        active.add(param.category);
+        hasAnyData = true;
+      }
+    });
+
+    // If no data is found at all, show all categories by default (empty template)
+    if (!hasAnyData) {
+      return CATEGORIES;
+    }
+
+    // Return only categories that have data
+    return CATEGORIES.filter(cat => active.has(cat.id));
+  }, [mergedResults]);
+
   const generateClipboardString = () => {
-    return LAB_PARAMETERS.map(param => formatValue(mergedResults[param.id])).join('\n');
+    // We iterate through ACTIVE categories only.
+    // This implies that if a category is hidden, its rows are NOT copied.
+    let clipboardText = '';
+    
+    activeCategories.forEach((cat, index) => {
+      const catParams = LAB_PARAMETERS.filter(p => p.category === cat.id);
+      const catText = catParams.map(param => formatValue(mergedResults[param.id])).join('\n');
+      
+      clipboardText += catText;
+      
+      // Add a newline between blocks if there are multiple active blocks?
+      // Usually for Excel pasting, if the blocks are separate in Excel, the user copies one block at a time.
+      // If the user wants to copy ALL to one long column, we need a joiner.
+      // However, the prompt says "without skipping other indicators in column" which implies
+      // if I have Coag only, I get 5 numbers. I paste them into the Coag section.
+      // If I have CBC + Coag, I get CBC numbers [newline] Coag numbers.
+      if (index < activeCategories.length - 1) {
+        clipboardText += '\n';
+      }
+    });
+
+    return clipboardText;
   };
 
   const handleCopy = async () => {
@@ -69,28 +123,44 @@ export const ResultColumn: React.FC<ResultColumnProps> = ({ mergedResults, fragm
       </div>
 
       <div className="p-0 overflow-auto flex-1 bg-slate-50/50">
-        <table className="w-full text-sm text-left">
-          <thead className="text-xs text-slate-500 uppercase bg-slate-100 sticky top-0">
+        <table className="w-full text-sm text-left border-collapse">
+          <thead className="text-xs text-slate-500 uppercase bg-slate-100 sticky top-0 z-10 shadow-sm">
             <tr>
               <th className="px-4 py-3 w-2/3">Показник</th>
               <th className="px-4 py-3 w-1/3 text-right">Значення (Excel)</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
-            {LAB_PARAMETERS.map((param) => {
-              const rawValue = mergedResults[param.id];
-              const formattedValue = formatValue(rawValue);
-              const hasValue = formattedValue !== '';
-
+            {activeCategories.map((category) => {
+              const catParams = LAB_PARAMETERS.filter(p => p.category === category.id);
+              
               return (
-                <tr key={param.id} className={hasValue ? "bg-blue-50/30" : "bg-white"}>
-                  <td className="px-4 py-2 text-slate-600 font-medium whitespace-nowrap overflow-hidden text-ellipsis" title={param.label}>
-                    {param.label}
-                  </td>
-                  <td className="px-4 py-2 text-right font-mono text-slate-800">
-                    {formattedValue || <span className="text-slate-300 italic">-</span>}
-                  </td>
-                </tr>
+                <React.Fragment key={category.id}>
+                  {/* Category Header */}
+                  <tr className="bg-slate-200/60">
+                    <td colSpan={2} className="px-4 py-1.5 text-xs font-bold text-slate-600 uppercase tracking-wider">
+                      {category.title}
+                    </td>
+                  </tr>
+                  
+                  {/* Category Rows */}
+                  {catParams.map((param) => {
+                    const rawValue = mergedResults[param.id];
+                    const formattedValue = formatValue(rawValue);
+                    const hasValue = formattedValue !== '';
+
+                    return (
+                      <tr key={param.id} className={hasValue ? "bg-blue-50/30" : "bg-white"}>
+                        <td className="px-4 py-2 text-slate-600 font-medium whitespace-nowrap overflow-hidden text-ellipsis" title={param.label}>
+                          {param.label}
+                        </td>
+                        <td className="px-4 py-2 text-right font-mono text-slate-800">
+                          {formattedValue || <span className="text-slate-300 italic">-</span>}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </React.Fragment>
               );
             })}
           </tbody>
@@ -98,7 +168,7 @@ export const ResultColumn: React.FC<ResultColumnProps> = ({ mergedResults, fragm
       </div>
       
       <div className="p-3 text-xs text-center text-slate-400 border-t border-slate-100 bg-slate-50 rounded-b-xl">
-        Порядок відповідає вимогам. Крапки замінено на коми.
+        Порядок відповідає категоріям. Порожні категорії приховані.
       </div>
     </div>
   );
