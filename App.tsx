@@ -90,9 +90,12 @@ const App: React.FC = () => {
   const [manualHostId, setManualHostId] = useState('');
   const [showManualEntry, setShowManualEntry] = useState(false);
 
+  // Reconnection refs
   const peerInstance = useRef<any>(null);
   const connRef = useRef<any>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const targetHostIdRef = useRef<string | null>(null);
+  const isIntentionalDisconnectRef = useRef<boolean>(false);
 
   // Init Peer
   useEffect(() => {
@@ -103,6 +106,7 @@ const App: React.FC = () => {
     if (hostIdFromUrl) {
       setIsClientMode(true);
       setConnectionStatus('connecting');
+      targetHostIdRef.current = hostIdFromUrl;
       initializePeer(null, hostIdFromUrl);
     } else {
       // Host mode: generate a random short ID
@@ -117,6 +121,30 @@ const App: React.FC = () => {
       }
     };
   }, []);
+
+  // Listener for tab visibility (Camera app return)
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        // If we are a client, suppose to be connected, but current status is disconnected/closed
+        if (
+          isClientMode && 
+          targetHostIdRef.current && 
+          !isIntentionalDisconnectRef.current &&
+          (!connRef.current || !connRef.current.open || connectionStatus !== 'connected')
+        ) {
+          console.log("App visible again, attempting auto-reconnect...");
+          reconnectToHost();
+        }
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [isClientMode, connectionStatus]);
+
 
   const initializePeer = (forcedId: string | null, targetHostId: string | null) => {
     // Avoid double init in React StrictMode
@@ -151,6 +179,10 @@ const App: React.FC = () => {
          peer.destroy();
          peerInstance.current = null;
          initializePeer(generateShortId(), targetHostId); // Retry with new ID
+      } else if (err.type === 'peer-unavailable') {
+          // Host might be gone, or we just have bad network
+          setConnectionStatus('disconnected');
+          // Don't error loudly if we are just backgrounding
       } else {
          setError('Помилка з\'єднання: ' + err.type);
          setConnectionStatus('disconnected');
@@ -159,13 +191,37 @@ const App: React.FC = () => {
 
     peer.on('disconnected', () => {
       console.log('Peer disconnected from server');
+      // If we are client and didn't mean to disconnect, try to reconnect to the signalling server
+      if (isClientMode && !isIntentionalDisconnectRef.current) {
+        peer.reconnect();
+      }
     });
   };
 
   const connectToHost = (peer: any, hostId: string) => {
     setConnectionStatus('connecting');
+    isIntentionalDisconnectRef.current = false;
+    targetHostIdRef.current = hostId;
+    
+    // Close existing if any
+    if (connRef.current) {
+      connRef.current.close();
+    }
+
     const conn = peer.connect(hostId, { reliable: true });
     setupConnection(conn);
+  };
+
+  const reconnectToHost = async () => {
+    if (!peerInstance.current || !targetHostIdRef.current) return;
+    
+    // If peer is disconnected from server, reconnect peer first
+    if (peerInstance.current.disconnected) {
+        await peerInstance.current.reconnect();
+    }
+    
+    console.log("Reconnecting to", targetHostIdRef.current);
+    connectToHost(peerInstance.current, targetHostIdRef.current);
   };
 
   const setupConnection = (conn: any) => {
@@ -175,6 +231,7 @@ const App: React.FC = () => {
       connRef.current = conn;
       setShowQrModal(false);
       setShowManualEntry(false);
+      setError(null);
     });
 
     conn.on('data', (data: any) => {
@@ -194,8 +251,23 @@ const App: React.FC = () => {
 
     conn.on('close', () => {
       console.log('Connection closed');
-      setConnectionStatus('disconnected');
       connRef.current = null;
+      
+      // Only set UI to disconnected if it wasn't an intentional action
+      // This helps prevent "flickering" UI if we reconnect immediately
+      if (isIntentionalDisconnectRef.current) {
+          setConnectionStatus('disconnected');
+      } else {
+          // If we are client, we might want to stay in 'connecting' state or try reconnect
+          if (isClientMode) {
+             console.log("Unexpected close, status remains: ", connectionStatus);
+             // Optionally trigger reconnect here immediately
+             // reconnectToHost(); 
+             setConnectionStatus('disconnected');
+          } else {
+             setConnectionStatus('disconnected');
+          }
+      }
     });
 
     conn.on('error', (err: any) => {
@@ -205,10 +277,12 @@ const App: React.FC = () => {
   };
 
   const handleDisconnect = () => {
+    isIntentionalDisconnectRef.current = true;
     if (connRef.current) {
       connRef.current.close();
     }
     setConnectionStatus('disconnected');
+    targetHostIdRef.current = null;
     
     // If we were client mode, remove the ?host param from URL to go back to standalone/host mode capabilities
     if (isClientMode) {
@@ -320,6 +394,36 @@ const App: React.FC = () => {
     setIsProcessing(true);
     setError(null);
 
+    // If client mode, check connection before starting processing
+    if (isClientMode && (!connRef.current || !connRef.current.open)) {
+      console.log("Connection lost, attempting to reconnect before processing...");
+      setConnectionStatus('connecting');
+      try {
+        await reconnectToHost();
+        // Wait a bit for connection to open
+        await new Promise<void>((resolve, reject) => {
+           let attempts = 0;
+           const interval = setInterval(() => {
+              attempts++;
+              if (connRef.current && connRef.current.open) {
+                 clearInterval(interval);
+                 resolve();
+              }
+              if (attempts > 20) { // 2 seconds timeout
+                 clearInterval(interval);
+                 reject("Timeout connecting");
+              }
+           }, 100);
+        });
+      } catch (e) {
+         console.error("Failed to reconnect before sending", e);
+         setError("Втрачено зв'язок з комп'ютером. Спробуйте оновити сторінку або перепідключитися.");
+         setIsProcessing(false);
+         setConnectionStatus('disconnected');
+         return;
+      }
+    }
+
     try {
       const imagesPayload = selectedImages.map(img => ({ data: img.data, mimeType: img.mimeType }));
 
@@ -345,11 +449,15 @@ const App: React.FC = () => {
           isImage: selectedImages.length > 0
         };
 
-        if (isClientMode && connectionStatus === 'connected' && connRef.current) {
-          // Send to Host
-          connRef.current.send({ type: 'NEW_BATCH', payload: newBatch });
-          alert("Дані успішно надіслано на головний пристрій!");
-          clearInputs();
+        if (isClientMode) {
+          if (connRef.current && connRef.current.open) {
+            connRef.current.send({ type: 'NEW_BATCH', payload: newBatch });
+            alert("Дані успішно надіслано на головний пристрій!");
+            clearInputs();
+          } else {
+             // Fallback if reconnection appeared to work but then failed
+             setError("Зв'язок нестабільний. Не вдалося надіслати дані.");
+          }
         } else {
           // Process Locally
           if (batches.length > 0) {
@@ -566,7 +674,10 @@ const App: React.FC = () => {
               <div className="flex items-center gap-3">
                   <div className="flex items-center gap-2 text-sm">
                     <span className={`w-2 h-2 rounded-full ${connectionStatus === 'connected' ? 'bg-green-500' : 'bg-red-500'}`}></span>
-                    <span className="text-slate-600">{connectionStatus === 'connected' ? 'З\'єднано з ПК' : 'Немає з\'єднання'}</span>
+                    <span className="text-slate-600">
+                        {connectionStatus === 'connected' ? 'З\'єднано з ПК' : 
+                         connectionStatus === 'connecting' ? 'Відновлення...' : 'Немає з\'єднання'}
+                    </span>
                   </div>
                   {connectionStatus === 'connected' && (
                     <button 
@@ -670,10 +781,10 @@ const App: React.FC = () => {
                       <RefreshIcon className="animate-spin" />
                       Аналізую...
                     </>
-                  ) : isClientMode && connectionStatus === 'connected' ? (
+                  ) : isClientMode ? (
                      <>
                         <PaperAirplaneIcon />
-                        Надіслати на ПК
+                        {connectionStatus === 'connected' ? 'Надіслати на ПК' : 'З\'єднати і надіслати'}
                      </>
                   ) : (
                     <>
