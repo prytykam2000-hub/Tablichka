@@ -9,9 +9,9 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "react-dom": "^18.2.0",
+    "react-dom": "^19.2.3",
     "@google/genai": "^1.34.0",
-    "react": "^18.2.0",
+    "react": "^19.2.3",
     "peerjs": "1.5.4",
     "react-qr-code": "2.0.15"
   },

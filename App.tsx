@@ -24,10 +24,21 @@ const PlusIcon = () => (
   </svg>
 );
 
-const PhotoIcon = () => (
+const VideoIcon = () => (
   <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
-    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+  </svg>
+);
+
+const StopIcon = () => (
+  <svg className="w-8 h-8 text-red-600" fill="currentColor" viewBox="0 0 24 24">
+    <rect x="6" y="6" width="12" height="12" rx="2" />
+  </svg>
+);
+
+const RecordIcon = () => (
+  <svg className="w-8 h-8 text-red-600" fill="currentColor" viewBox="0 0 24 24">
+    <circle cx="12" cy="12" r="10" />
   </svg>
 );
 
@@ -65,14 +76,7 @@ interface BatchData {
   id: number;
   text: string;
   results: LabResults;
-  isImage?: boolean;
-}
-
-interface ImageFile {
-  id: string;
-  data: string;
-  mimeType: string;
-  preview: string;
+  isImage?: boolean; // Keep for legacy, though now it means "Video" or "Media"
 }
 
 const DAILY_LIMIT = 20;
@@ -81,58 +85,41 @@ const generateShortId = () => {
   return 'lab-' + Math.floor(Math.random() * 9000 + 1000);
 };
 
-const resizeAndCompressImage = (file: File): Promise<ImageFile> => {
-  return new Promise((resolve) => {
+const blobToBase64 = (blob: Blob): Promise<string> => {
+  return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.readAsDataURL(file);
-    reader.onload = (event) => {
-      const img = new Image();
-      img.src = event.target?.result as string;
-      img.onload = () => {
-        const canvas = document.createElement('canvas');
-        const MAX_DIMENSION = 1280; 
-        let width = img.width;
-        let height = img.height;
-
-        if (width > height) {
-          if (width > MAX_DIMENSION) {
-            height *= MAX_DIMENSION / width;
-            width = MAX_DIMENSION;
-          }
-        } else {
-          if (height > MAX_DIMENSION) {
-            width *= MAX_DIMENSION / height;
-            height = MAX_DIMENSION;
-          }
-        }
-
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext('2d');
-        ctx?.drawImage(img, 0, 0, width, height);
-        const dataUrl = canvas.toDataURL('image/jpeg', 0.6);
-        
-        resolve({
-          id: Math.random().toString(36).substring(7),
-          data: dataUrl.split(',')[1],
-          mimeType: 'image/jpeg',
-          preview: dataUrl
-        });
-      };
+    reader.onloadend = () => {
+      const base64String = reader.result as string;
+      // Remove data url prefix (e.g. "data:video/mp4;base64,")
+      const base64Data = base64String.split(',')[1];
+      resolve(base64Data);
     };
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
   });
 };
 
 const App: React.FC = () => {
   const [inputText, setInputText] = useState('');
-  const [selectedImages, setSelectedImages] = useState<ImageFile[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [batches, setBatches] = useState<Array<BatchData>>([]);
   const [error, setError] = useState<string | null>(null);
-  const [isCompressing, setIsCompressing] = useState(false);
   const [remainingConversions, setRemainingConversions] = useState(DAILY_LIMIT);
-  
   const [pendingBatch, setPendingBatch] = useState<BatchData | null>(null);
+
+  // Video Recording State
+  const [videoBlob, setVideoBlob] = useState<Blob | null>(null);
+  const [videoPreviewUrl, setVideoPreviewUrl] = useState<string | null>(null);
+  const [isRecording, setIsRecording] = useState(false);
+  const [isCameraActive, setIsCameraActive] = useState(false);
+  const [recordingTime, setRecordingTime] = useState(0);
+
+  // Refs
+  const videoPreviewRef = useRef<HTMLVideoElement>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
+  const timerRef = useRef<number | null>(null);
 
   // Sync / PeerJS State
   const [myPeerId, setMyPeerId] = useState<string | null>(null);
@@ -142,10 +129,8 @@ const App: React.FC = () => {
   const [manualHostId, setManualHostId] = useState('');
   const [showManualEntry, setShowManualEntry] = useState(false);
 
-  // Reconnection refs
   const peerInstance = useRef<any>(null);
   const connRef = useRef<any>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const targetHostIdRef = useRef<string | null>(null);
   const isIntentionalDisconnectRef = useRef<boolean>(false);
 
@@ -186,7 +171,7 @@ const App: React.FC = () => {
     return newStats;
   };
 
-  // Init Peer
+  // PeerJS Init
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const hostIdFromUrl = params.get('host');
@@ -206,6 +191,7 @@ const App: React.FC = () => {
         peerInstance.current.destroy();
         peerInstance.current = null;
       }
+      stopCamera();
     };
   }, []);
 
@@ -221,6 +207,11 @@ const App: React.FC = () => {
         ) {
           reconnectToHost();
         }
+      } else {
+        // Stop camera if backgrounded to save battery/privacy
+        if (isCameraActive && !isRecording) {
+            stopCamera();
+        }
       }
     };
 
@@ -228,7 +219,108 @@ const App: React.FC = () => {
     return () => {
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [isClientMode, connectionStatus]);
+  }, [isClientMode, connectionStatus, isCameraActive, isRecording]);
+
+  // --- Video Logic ---
+
+  const startCamera = async () => {
+    try {
+        setError(null);
+        // Request video, prefer back camera
+        const stream = await navigator.mediaDevices.getUserMedia({ 
+            video: { 
+                facingMode: 'environment',
+                width: { ideal: 1280 }, // 720p is usually enough for OCR and keeps size down
+                height: { ideal: 720 }
+            }, 
+            audio: false 
+        });
+        
+        streamRef.current = stream;
+        if (videoPreviewRef.current) {
+            videoPreviewRef.current.srcObject = stream;
+        }
+        setIsCameraActive(true);
+        setVideoBlob(null); // Clear previous recording
+        setVideoPreviewUrl(null);
+    } catch (err) {
+        console.error("Camera error:", err);
+        setError("Не вдалося отримати доступ до камери. Перевірте дозволи.");
+    }
+  };
+
+  const stopCamera = () => {
+    if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop());
+        streamRef.current = null;
+    }
+    if (videoPreviewRef.current) {
+        videoPreviewRef.current.srcObject = null;
+    }
+    setIsCameraActive(false);
+  };
+
+  const startRecording = () => {
+      if (!streamRef.current) return;
+      
+      chunksRef.current = [];
+      const mimeType = MediaRecorder.isTypeSupported('video/webm; codecs=vp9') 
+        ? 'video/webm; codecs=vp9' 
+        : MediaRecorder.isTypeSupported('video/mp4') 
+            ? 'video/mp4' 
+            : 'video/webm'; // Fallback
+
+      const recorder = new MediaRecorder(streamRef.current, { mimeType });
+      
+      recorder.ondataavailable = (e) => {
+          if (e.data.size > 0) {
+              chunksRef.current.push(e.data);
+          }
+      };
+
+      recorder.onstop = () => {
+          const blob = new Blob(chunksRef.current, { type: mimeType });
+          setVideoBlob(blob);
+          const url = URL.createObjectURL(blob);
+          setVideoPreviewUrl(url);
+          stopCamera(); // Auto stop camera after recording
+      };
+
+      mediaRecorderRef.current = recorder;
+      recorder.start();
+      setIsRecording(true);
+      setRecordingTime(0);
+      
+      // Timer limit (max 10 seconds to keep file size small for API)
+      timerRef.current = window.setInterval(() => {
+          setRecordingTime(prev => {
+              if (prev >= 9) { // Stop at 10s
+                  stopRecording();
+                  return 10;
+              }
+              return prev + 1;
+          });
+      }, 1000);
+  };
+
+  const stopRecording = () => {
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+          mediaRecorderRef.current.stop();
+          setIsRecording(false);
+      }
+      if (timerRef.current) {
+          clearInterval(timerRef.current);
+          timerRef.current = null;
+      }
+  };
+
+  const clearVideo = () => {
+      setVideoBlob(null);
+      setVideoPreviewUrl(null);
+      // Don't restart camera automatically, let user choose
+  };
+
+  // --- Peer Logic ---
 
   const initializePeer = (forcedId: string | null, targetHostId: string | null) => {
     if (peerInstance.current) return;
@@ -293,8 +385,6 @@ const App: React.FC = () => {
     conn.on('data', (data: any) => {
       if (data && data.type === 'NEW_BATCH') {
          const newBatch = data.payload;
-         
-         // Sync usage if provided by mobile client
          if (data.usage) {
            localStorage.setItem('lab2excel_usage', JSON.stringify(data.usage));
            setRemainingConversions(Math.max(0, DAILY_LIMIT - data.usage.used));
@@ -357,62 +447,15 @@ const App: React.FC = () => {
     return final;
   }, [batches]);
 
-  const processFiles = async (files: FileList) => {
-    const validFiles = Array.from(files).filter(f => f.type.startsWith('image/'));
-    if (validFiles.length === 0) {
-        if (files.length > 0) setError('Будь ласка, оберіть файли зображень');
-        return;
-    }
-    setIsCompressing(true);
-    setError(null);
-    try {
-      const processedImages = await Promise.all(
-        validFiles.map(file => resizeAndCompressImage(file))
-      );
-      setSelectedImages(prev => [...prev, ...processedImages]);
-    } catch (e) {
-      setError("Помилка обробки зображення. Спробуйте ще раз.");
-    } finally {
-      setIsCompressing(false);
-    }
-  };
-
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (files && files.length > 0) processFiles(files);
-    if (fileInputRef.current) fileInputRef.current.value = '';
-  };
-
-  const handlePaste = (e: React.ClipboardEvent) => {
-    const items = e.clipboardData.items;
-    const files: File[] = [];
-    for (let i = 0; i < items.length; i++) {
-      if (items[i].type.indexOf('image') !== -1) {
-        const file = items[i].getAsFile();
-        if (file) files.push(file);
-      }
-    }
-    if (files.length > 0) {
-      e.preventDefault();
-      const dt = new DataTransfer();
-      files.forEach(f => dt.items.add(f));
-      processFiles(dt.files);
-    }
-  };
-
-  const removeImage = (id: string) => {
-    setSelectedImages(prev => prev.filter(img => img.id !== id));
-  };
 
   const clearInputs = () => {
     setInputText(''); 
-    setSelectedImages([]);
-    if (fileInputRef.current) fileInputRef.current.value = '';
+    clearVideo();
     setPendingBatch(null);
   };
 
   const handleAddAndAnalyze = async () => {
-    if (!inputText.trim() && selectedImages.length === 0) return;
+    if (!inputText.trim() && !videoBlob) return;
     if (remainingConversions <= 0) {
         setError("Ви вичерпали денний ліміт (20/20). Повертайтеся завтра!");
         return;
@@ -442,31 +485,38 @@ const App: React.FC = () => {
     }
 
     try {
-      const imagesPayload = selectedImages.map(img => ({ data: img.data, mimeType: img.mimeType }));
-      const results = await extractLabData(inputText, imagesPayload.length > 0 ? imagesPayload : undefined);
+      let videoData = undefined;
+      if (videoBlob) {
+          const base64 = await blobToBase64(videoBlob);
+          videoData = {
+              data: base64,
+              mimeType: videoBlob.type
+          };
+      }
+
+      const results = await extractLabData(inputText, videoData);
       
       const foundCount = Object.values(results).filter(v => v !== null && v !== '').length;
 
       if (foundCount === 0) {
         setError("Не вдалося знайти показників.");
       } else {
-        const usageStats = trackUsage(); // Decrease conversion counter and get stats
+        const usageStats = trackUsage();
         
         let labelText = inputText;
-        if (selectedImages.length > 0) {
-          labelText = selectedImages.length === 1 ? "Аналіз фото" : `Аналіз ${selectedImages.length} фото`;
+        if (videoBlob) {
+          labelText = "Аналіз відео";
         }
 
         const newBatch = {
           id: Date.now(),
           text: labelText,
           results: results,
-          isImage: selectedImages.length > 0
+          isImage: !!videoBlob
         };
 
         if (isClientMode) {
           if (connRef.current && connRef.current.open) {
-            // Send new batch AND updated usage stats for synchronization
             connRef.current.send({ 
               type: 'NEW_BATCH', 
               payload: newBatch,
@@ -490,6 +540,7 @@ const App: React.FC = () => {
       let errorMessage = "Помилка обробки. Перевірте з'єднання.";
       const errStr = (err?.message || err?.toString() || "").toLowerCase();
       if (errStr.includes("429")) errorMessage = "Вичерпано ліміт API. Спробуйте через хвилину.";
+      if (errStr.includes("payload")) errorMessage = "Відео занадто велике. Спробуйте записати коротше відео.";
       setError(errorMessage);
     } finally {
       setIsProcessing(false);
@@ -638,33 +689,57 @@ const App: React.FC = () => {
         <main className="grid grid-cols-1 lg:grid-cols-2 gap-8">
           <div className="flex flex-col gap-6">
             <div className="bg-white p-5 rounded-xl shadow-sm border border-slate-200">
-              <div className="flex justify-between items-center mb-2">
-                <label className="block text-sm font-semibold text-slate-700">Введіть текст або додайте фото</label>
-                <button onClick={() => fileInputRef.current?.click()} className="text-xs font-medium text-blue-600 hover:text-blue-700 flex items-center gap-1.5 px-2 py-1 rounded bg-blue-50">
-                  <PhotoIcon /> {selectedImages.length > 0 ? 'Додати ще' : 'Обрати фото'}
-                </button>
-                <input type="file" ref={fileInputRef} onChange={handleFileChange} accept="image/*" className="hidden" multiple />
-              </div>
+              <label className="block text-sm font-semibold text-slate-700 mb-3">Записати відео (сканування) або текст</label>
 
-              {selectedImages.length > 0 && (
-                <div className="mb-3 grid grid-cols-3 sm:grid-cols-4 gap-2">
-                  {selectedImages.map((img) => (
-                    <div key={img.id} className="relative group aspect-square rounded-lg border-2 border-blue-200 overflow-hidden">
-                       <img src={img.preview} className="w-full h-full object-cover" />
-                       <button onClick={() => removeImage(img.id)} className="absolute top-1 right-1 bg-red-500 text-white rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-                         <XMarkIcon />
+              {/* Video Recording Area */}
+              <div className="mb-4 bg-slate-900 rounded-lg overflow-hidden relative aspect-video flex flex-col items-center justify-center border-4 border-slate-100 shadow-inner">
+                {videoPreviewUrl ? (
+                   <div className="relative w-full h-full">
+                       <video src={videoPreviewUrl} controls className="w-full h-full object-contain bg-black" />
+                       <button onClick={clearVideo} className="absolute top-2 right-2 bg-white/20 hover:bg-white/40 backdrop-blur text-white p-1 rounded-full">
+                           <XMarkIcon />
                        </button>
-                    </div>
-                  ))}
-                </div>
-              )}
+                   </div>
+                ) : isCameraActive ? (
+                   <div className="relative w-full h-full">
+                       <video ref={videoPreviewRef} autoPlay playsInline muted className="w-full h-full object-cover" />
+                       <div className="absolute bottom-4 left-0 right-0 flex justify-center items-center gap-4">
+                            {!isRecording ? (
+                                <button onClick={startRecording} className="bg-white rounded-full p-4 shadow-lg hover:scale-110 transition-transform">
+                                    <RecordIcon />
+                                </button>
+                            ) : (
+                                <div className="flex flex-col items-center gap-2">
+                                    <div className="text-white font-mono font-bold bg-red-600 px-3 py-1 rounded-full text-sm animate-pulse">
+                                        00:0{recordingTime} / 00:10
+                                    </div>
+                                    <button onClick={stopRecording} className="bg-white rounded-full p-4 shadow-lg hover:scale-110 transition-transform">
+                                        <StopIcon />
+                                    </button>
+                                </div>
+                            )}
+                       </div>
+                   </div>
+                ) : (
+                   <div className="text-center p-6">
+                       <button 
+                         onClick={startCamera}
+                         className="flex flex-col items-center gap-2 text-slate-400 hover:text-white transition-colors"
+                       >
+                           <div className="p-4 rounded-full bg-slate-800 hover:bg-slate-700 transition-colors">
+                               <VideoIcon />
+                           </div>
+                           <span className="text-sm font-medium">Натисніть, щоб активувати камеру</span>
+                       </button>
+                   </div>
+                )}
+              </div>
 
               <textarea
                 value={inputText}
                 onChange={(e) => setInputText(e.target.value)}
-                onPaste={handlePaste}
-                placeholder="Вставте текст сюди..."
-                className="w-full h-32 p-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 bg-slate-50 resize-none"
+                placeholder="Або вставте текст результатів сюди..."
+                className="w-full h-24 p-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 bg-slate-50 resize-none mb-2"
                 disabled={isProcessing}
               />
               
@@ -677,14 +752,14 @@ const App: React.FC = () => {
               <div className="mt-4">
                 <button
                   onClick={handleAddAndAnalyze}
-                  disabled={isProcessing || isCompressing || (!inputText.trim() && selectedImages.length === 0) || remainingConversions <= 0}
-                  className={`w-full py-2.5 px-4 rounded-lg flex justify-center items-center gap-2 font-medium transition-all ${
-                    isProcessing || isCompressing || (!inputText.trim() && selectedImages.length === 0) || remainingConversions <= 0
+                  disabled={isProcessing || (!inputText.trim() && !videoBlob) || remainingConversions <= 0}
+                  className={`w-full py-3 px-4 rounded-lg flex justify-center items-center gap-2 font-medium transition-all text-lg ${
+                    isProcessing || (!inputText.trim() && !videoBlob) || remainingConversions <= 0
                       ? "bg-slate-200 text-slate-400 cursor-not-allowed"
                       : "bg-blue-600 text-white hover:bg-blue-700 shadow-md"
                   }`}
                 >
-                  {isProcessing ? <RefreshIcon className="animate-spin" /> : <><PlusIcon /> Додати до звіту</>}
+                  {isProcessing ? <RefreshIcon className="animate-spin" /> : <><PaperAirplaneIcon /> Аналізувати відео/текст</>}
                 </button>
                 {remainingConversions <= 3 && remainingConversions > 0 && (
                   <p className="mt-2 text-[10px] text-amber-600 font-medium text-center">
@@ -701,7 +776,10 @@ const App: React.FC = () => {
                   {batches.map((batch, index) => (
                     <div key={batch.id} className="p-3 bg-slate-50 rounded-lg border border-slate-100 text-sm group relative">
                       <div className="flex justify-between items-start mb-1">
-                        <div className="font-medium text-slate-500 text-xs uppercase">Фрагмент {index + 1}</div>
+                        <div className="flex items-center gap-2">
+                            <div className="font-medium text-slate-500 text-xs uppercase">Фрагмент {index + 1}</div>
+                            {batch.isImage && <span className="bg-purple-100 text-purple-600 text-[10px] px-1 rounded font-bold">VIDEO</span>}
+                        </div>
                         <button onClick={() => setBatches(prev => prev.filter(b => b.id !== batch.id))} className="text-slate-400 hover:text-red-500">
                            <TrashIcon />
                         </button>
@@ -719,7 +797,7 @@ const App: React.FC = () => {
                 <div className="bg-white rounded-xl shadow-sm border border-slate-200 h-full flex flex-col items-center justify-center p-8 text-center">
                    <div className="bg-purple-100 p-4 rounded-full mb-4"><PhoneIcon /></div>
                    <h2 className="text-xl font-bold text-slate-800 mb-2">Мобільний сканер</h2>
-                   <p className="text-slate-500">Результати автоматично надсилаються на ПК.</p>
+                   <p className="text-slate-500">Запишіть відео з результатами аналізів. Дані автоматично надішлються на ПК.</p>
                 </div>
              ) : (
                 <ResultColumn mergedResults={mergedResults} fragmentCount={batches.length} />
