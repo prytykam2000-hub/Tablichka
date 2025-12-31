@@ -237,6 +237,8 @@ const App: React.FC = () => {
         });
         
         streamRef.current = stream;
+        // NOTE: We don't strictly need to set srcObject here because the useEffect below will handle it
+        // but it doesn't hurt to do it immediately for faster feedback.
         if (videoPreviewRef.current) {
             videoPreviewRef.current.srcObject = stream;
         }
@@ -248,6 +250,16 @@ const App: React.FC = () => {
         setError("Не вдалося отримати доступ до камери. Перевірте дозволи.");
     }
   };
+
+  // THIS IS THE CRITICAL FIX: Ensure stream stays attached during re-renders
+  useEffect(() => {
+    if (isCameraActive && videoPreviewRef.current && streamRef.current) {
+      // Check if it's already set to avoid flickering
+      if (videoPreviewRef.current.srcObject !== streamRef.current) {
+         videoPreviewRef.current.srcObject = streamRef.current;
+      }
+    }
+  }, [isCameraActive, isRecording]); // Re-run when recording state changes
 
   const stopCamera = () => {
     if (streamRef.current) {
