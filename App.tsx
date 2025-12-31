@@ -692,7 +692,7 @@ const App: React.FC = () => {
               <label className="block text-sm font-semibold text-slate-700 mb-3">Записати відео (сканування) або текст</label>
 
               {/* Video Recording Area */}
-              <div className="mb-4 bg-slate-900 rounded-lg overflow-hidden relative aspect-video flex flex-col items-center justify-center border-4 border-slate-100 shadow-inner">
+              <div className={`mb-4 bg-slate-900 rounded-lg overflow-hidden relative aspect-video flex flex-col items-center justify-center border-4 shadow-inner transition-colors duration-300 ${isRecording ? 'border-red-600' : 'border-slate-100'}`}>
                 {videoPreviewUrl ? (
                    <div className="relative w-full h-full">
                        <video src={videoPreviewUrl} controls className="w-full h-full object-contain bg-black" />
@@ -703,7 +703,16 @@ const App: React.FC = () => {
                 ) : isCameraActive ? (
                    <div className="relative w-full h-full">
                        <video ref={videoPreviewRef} autoPlay playsInline muted className="w-full h-full object-cover" />
-                       <div className="absolute bottom-4 left-0 right-0 flex justify-center items-center gap-4">
+                       
+                       {/* REC Indicator */}
+                       {isRecording && (
+                        <div className="absolute top-4 left-4 bg-red-600 text-white text-xs font-bold px-3 py-1 rounded-full animate-pulse flex items-center gap-2 z-10">
+                           <div className="w-2 h-2 bg-white rounded-full"></div>
+                           REC
+                        </div>
+                       )}
+
+                       <div className="absolute bottom-4 left-0 right-0 flex justify-center items-center gap-4 z-20">
                             {!isRecording ? (
                                 <button onClick={startRecording} className="bg-white rounded-full p-4 shadow-lg hover:scale-110 transition-transform">
                                     <RecordIcon />
