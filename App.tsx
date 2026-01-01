@@ -24,21 +24,16 @@ const PlusIcon = () => (
   </svg>
 );
 
-const VideoIcon = () => (
+const CameraIcon = () => (
+  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
+  </svg>
+);
+
+const CheckIcon = () => (
   <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
-  </svg>
-);
-
-const StopIcon = () => (
-  <svg className="w-8 h-8 text-red-600" fill="currentColor" viewBox="0 0 24 24">
-    <rect x="6" y="6" width="12" height="12" rx="2" />
-  </svg>
-);
-
-const RecordIcon = () => (
-  <svg className="w-8 h-8 text-red-600" fill="currentColor" viewBox="0 0 24 24">
-    <circle cx="12" cy="12" r="10" />
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
   </svg>
 );
 
@@ -76,27 +71,13 @@ interface BatchData {
   id: number;
   text: string;
   results: LabResults;
-  isImage?: boolean; // Keep for legacy, though now it means "Video" or "Media"
+  isImage?: boolean; // Now indicates "Media present"
 }
 
 const DAILY_LIMIT = 20;
 
 const generateShortId = () => {
   return 'lab-' + Math.floor(Math.random() * 9000 + 1000);
-};
-
-const blobToBase64 = (blob: Blob): Promise<string> => {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      const base64String = reader.result as string;
-      // Remove data url prefix (e.g. "data:video/mp4;base64,")
-      const base64Data = base64String.split(',')[1];
-      resolve(base64Data);
-    };
-    reader.onerror = reject;
-    reader.readAsDataURL(blob);
-  });
 };
 
 const App: React.FC = () => {
@@ -107,19 +88,15 @@ const App: React.FC = () => {
   const [remainingConversions, setRemainingConversions] = useState(DAILY_LIMIT);
   const [pendingBatch, setPendingBatch] = useState<BatchData | null>(null);
 
-  // Video Recording State
-  const [videoBlob, setVideoBlob] = useState<Blob | null>(null);
-  const [videoPreviewUrl, setVideoPreviewUrl] = useState<string | null>(null);
-  const [isRecording, setIsRecording] = useState(false);
+  // Photo Capture State
+  const [capturedImages, setCapturedImages] = useState<string[]>([]); // Array of base64 strings (jpeg)
+  const [tempImage, setTempImage] = useState<string | null>(null); // The photo currently being reviewed
   const [isCameraActive, setIsCameraActive] = useState(false);
-  const [recordingTime, setRecordingTime] = useState(0);
-
+  
   // Refs
   const videoPreviewRef = useRef<HTMLVideoElement>(null);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  const chunksRef = useRef<Blob[]>([]);
-  const timerRef = useRef<number | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
 
   // Sync / PeerJS State
   const [myPeerId, setMyPeerId] = useState<string | null>(null);
@@ -209,7 +186,7 @@ const App: React.FC = () => {
         }
       } else {
         // Stop camera if backgrounded to save battery/privacy
-        if (isCameraActive && !isRecording) {
+        if (isCameraActive) {
             stopCamera();
         }
       }
@@ -219,47 +196,42 @@ const App: React.FC = () => {
     return () => {
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [isClientMode, connectionStatus, isCameraActive, isRecording]);
+  }, [isClientMode, connectionStatus, isCameraActive]);
 
-  // --- Video Logic ---
+  // --- Camera Logic ---
 
   const startCamera = async () => {
     try {
         setError(null);
-        // Request video, prefer back camera
         const stream = await navigator.mediaDevices.getUserMedia({ 
             video: { 
                 facingMode: 'environment',
-                width: { ideal: 1280 }, // 720p is usually enough for OCR and keeps size down
-                height: { ideal: 720 }
+                width: { ideal: 1920 }, // Higher res for photos
+                height: { ideal: 1080 }
             }, 
             audio: false 
         });
         
         streamRef.current = stream;
-        // NOTE: We don't strictly need to set srcObject here because the useEffect below will handle it
-        // but it doesn't hurt to do it immediately for faster feedback.
         if (videoPreviewRef.current) {
             videoPreviewRef.current.srcObject = stream;
         }
         setIsCameraActive(true);
-        setVideoBlob(null); // Clear previous recording
-        setVideoPreviewUrl(null);
+        setTempImage(null);
     } catch (err) {
         console.error("Camera error:", err);
         setError("Не вдалося отримати доступ до камери. Перевірте дозволи.");
     }
   };
 
-  // THIS IS THE CRITICAL FIX: Ensure stream stays attached during re-renders
   useEffect(() => {
     if (isCameraActive && videoPreviewRef.current && streamRef.current) {
-      // Check if it's already set to avoid flickering
-      if (videoPreviewRef.current.srcObject !== streamRef.current) {
-         videoPreviewRef.current.srcObject = streamRef.current;
-      }
+       // Ensure stream stays attached
+       if (videoPreviewRef.current.srcObject !== streamRef.current) {
+          videoPreviewRef.current.srcObject = streamRef.current;
+       }
     }
-  }, [isCameraActive, isRecording]); // Re-run when recording state changes
+  }, [isCameraActive, tempImage]); 
 
   const stopCamera = () => {
     if (streamRef.current) {
@@ -272,64 +244,43 @@ const App: React.FC = () => {
     setIsCameraActive(false);
   };
 
-  const startRecording = () => {
-      if (!streamRef.current) return;
+  const takePhoto = () => {
+      if (!videoPreviewRef.current || !streamRef.current) return;
       
-      chunksRef.current = [];
-      const mimeType = MediaRecorder.isTypeSupported('video/webm; codecs=vp9') 
-        ? 'video/webm; codecs=vp9' 
-        : MediaRecorder.isTypeSupported('video/mp4') 
-            ? 'video/mp4' 
-            : 'video/webm'; // Fallback
-
-      const recorder = new MediaRecorder(streamRef.current, { mimeType });
-      
-      recorder.ondataavailable = (e) => {
-          if (e.data.size > 0) {
-              chunksRef.current.push(e.data);
-          }
-      };
-
-      recorder.onstop = () => {
-          const blob = new Blob(chunksRef.current, { type: mimeType });
-          setVideoBlob(blob);
-          const url = URL.createObjectURL(blob);
-          setVideoPreviewUrl(url);
-          stopCamera(); // Auto stop camera after recording
-      };
-
-      mediaRecorderRef.current = recorder;
-      recorder.start();
-      setIsRecording(true);
-      setRecordingTime(0);
-      
-      // Timer limit (max 10 seconds to keep file size small for API)
-      timerRef.current = window.setInterval(() => {
-          setRecordingTime(prev => {
-              if (prev >= 9) { // Stop at 10s
-                  stopRecording();
-                  return 10;
-              }
-              return prev + 1;
-          });
-      }, 1000);
-  };
-
-  const stopRecording = () => {
-      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-          mediaRecorderRef.current.stop();
-          setIsRecording(false);
-      }
-      if (timerRef.current) {
-          clearInterval(timerRef.current);
-          timerRef.current = null;
+      const video = videoPreviewRef.current;
+      const canvas = document.createElement('canvas');
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
+          // Remove prefix to store just base64 data for logic, but keep it as full URL for preview
+          setTempImage(dataUrl);
       }
   };
 
-  const clearVideo = () => {
-      setVideoBlob(null);
-      setVideoPreviewUrl(null);
-      // Don't restart camera automatically, let user choose
+  const confirmPhoto = (action: 'retake' | 'next' | 'finish') => {
+      if (!tempImage) return;
+      
+      const cleanBase64 = tempImage.split(',')[1];
+
+      if (action === 'retake') {
+          setTempImage(null);
+          // Video should still be playing underneath, just remove the overlay
+      } else if (action === 'next') {
+          setCapturedImages(prev => [...prev, cleanBase64]);
+          setTempImage(null);
+          // Ready for next photo
+      } else if (action === 'finish') {
+          setCapturedImages(prev => [...prev, cleanBase64]);
+          setTempImage(null);
+          stopCamera();
+      }
+  };
+
+  const removeCapturedImage = (index: number) => {
+      setCapturedImages(prev => prev.filter((_, i) => i !== index));
   };
 
   // --- Peer Logic ---
@@ -462,12 +413,12 @@ const App: React.FC = () => {
 
   const clearInputs = () => {
     setInputText(''); 
-    clearVideo();
+    setCapturedImages([]);
     setPendingBatch(null);
   };
 
   const handleAddAndAnalyze = async () => {
-    if (!inputText.trim() && !videoBlob) return;
+    if (!inputText.trim() && capturedImages.length === 0) return;
     if (remainingConversions <= 0) {
         setError("Ви вичерпали денний ліміт (20/20). Повертайтеся завтра!");
         return;
@@ -497,16 +448,8 @@ const App: React.FC = () => {
     }
 
     try {
-      let videoData = undefined;
-      if (videoBlob) {
-          const base64 = await blobToBase64(videoBlob);
-          videoData = {
-              data: base64,
-              mimeType: videoBlob.type
-          };
-      }
-
-      const results = await extractLabData(inputText, videoData);
+      // images are already base64 without prefix in `capturedImages`
+      const results = await extractLabData(inputText, capturedImages);
       
       const foundCount = Object.values(results).filter(v => v !== null && v !== '').length;
 
@@ -516,15 +459,15 @@ const App: React.FC = () => {
         const usageStats = trackUsage();
         
         let labelText = inputText;
-        if (videoBlob) {
-          labelText = "Аналіз відео";
+        if (capturedImages.length > 0) {
+          labelText = `Фото (${capturedImages.length} шт.) ${inputText ? '+ Текст' : ''}`;
         }
 
         const newBatch = {
           id: Date.now(),
           text: labelText,
           results: results,
-          isImage: !!videoBlob
+          isImage: capturedImages.length > 0
         };
 
         if (isClientMode) {
@@ -552,7 +495,7 @@ const App: React.FC = () => {
       let errorMessage = "Помилка обробки. Перевірте з'єднання.";
       const errStr = (err?.message || err?.toString() || "").toLowerCase();
       if (errStr.includes("429")) errorMessage = "Вичерпано ліміт API. Спробуйте через хвилину.";
-      if (errStr.includes("payload")) errorMessage = "Відео занадто велике. Спробуйте записати коротше відео.";
+      if (errStr.includes("payload")) errorMessage = "Дані занадто великі. Спробуйте менше фото.";
       setError(errorMessage);
     } finally {
       setIsProcessing(false);
@@ -581,8 +524,6 @@ const App: React.FC = () => {
     url.searchParams.set('host', myPeerId);
     return url.toString();
   };
-
-  const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 p-4 md:p-8 relative">
@@ -666,7 +607,6 @@ const App: React.FC = () => {
                 {isClientMode && (
                    <span className="bg-purple-100 text-purple-700 text-xs px-2 py-0.5 rounded-full font-bold border border-purple-200">MOBILE</span>
                 )}
-                {/* Usage Counter Badge */}
                 <div className={`flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-bold border ${remainingConversions <= 3 ? 'bg-red-50 text-red-600 border-red-200' : 'bg-blue-50 text-blue-700 border-blue-200'}`}>
                   <ZapIcon className="w-3 h-3" />
                   <span>{remainingConversions}/{DAILY_LIMIT}</span>
@@ -701,57 +641,105 @@ const App: React.FC = () => {
         <main className="grid grid-cols-1 lg:grid-cols-2 gap-8">
           <div className="flex flex-col gap-6">
             <div className="bg-white p-5 rounded-xl shadow-sm border border-slate-200">
-              <label className="block text-sm font-semibold text-slate-700 mb-3">Записати відео (сканування) або текст</label>
+              <label className="block text-sm font-semibold text-slate-700 mb-3">Завантажити фото або текст</label>
 
-              {/* Video Recording Area */}
-              <div className={`mb-4 bg-slate-900 rounded-lg overflow-hidden relative aspect-video flex flex-col items-center justify-center border-4 shadow-inner transition-colors duration-300 ${isRecording ? 'border-red-600' : 'border-slate-100'}`}>
-                {videoPreviewUrl ? (
-                   <div className="relative w-full h-full">
-                       <video src={videoPreviewUrl} controls className="w-full h-full object-contain bg-black" />
-                       <button onClick={clearVideo} className="absolute top-2 right-2 bg-white/20 hover:bg-white/40 backdrop-blur text-white p-1 rounded-full">
-                           <XMarkIcon />
-                       </button>
-                   </div>
-                ) : isCameraActive ? (
+              {/* Camera / Image Area */}
+              <div className="mb-4 bg-slate-900 rounded-lg overflow-hidden relative aspect-video flex flex-col items-center justify-center border-4 border-slate-100 shadow-inner group">
+                {isCameraActive ? (
                    <div className="relative w-full h-full">
                        <video ref={videoPreviewRef} autoPlay playsInline muted className="w-full h-full object-cover" />
                        
-                       {/* REC Indicator */}
-                       {isRecording && (
-                        <div className="absolute top-4 left-4 bg-red-600 text-white text-xs font-bold px-3 py-1 rounded-full animate-pulse flex items-center gap-2 z-10">
-                           <div className="w-2 h-2 bg-white rounded-full"></div>
-                           REC
-                        </div>
+                       {/* Freeze frame overlay if reviewing a photo */}
+                       {tempImage && (
+                          <div className="absolute inset-0 z-20 bg-black">
+                            <img src={tempImage} alt="Captured" className="w-full h-full object-contain" />
+                            <div className="absolute inset-0 bg-black/40" /> {/* Slight dim */}
+                          </div>
                        )}
 
-                       <div className="absolute bottom-4 left-0 right-0 flex justify-center items-center gap-4 z-20">
-                            {!isRecording ? (
-                                <button onClick={startRecording} className="bg-white rounded-full p-4 shadow-lg hover:scale-110 transition-transform">
-                                    <RecordIcon />
+                       {/* Action Buttons */}
+                       <div className="absolute bottom-0 left-0 right-0 p-6 flex justify-center items-center gap-6 z-30 bg-gradient-to-t from-black/80 to-transparent">
+                            {!tempImage ? (
+                                <button 
+                                  onClick={takePhoto} 
+                                  className="bg-white rounded-full p-1 border-4 border-slate-300 hover:scale-105 transition-transform"
+                                >
+                                  <div className="w-14 h-14 bg-white rounded-full border-2 border-slate-900" />
                                 </button>
                             ) : (
-                                <div className="flex flex-col items-center gap-2">
-                                    <div className="text-white font-mono font-bold bg-red-600 px-3 py-1 rounded-full text-sm animate-pulse">
-                                        00:0{recordingTime} / 00:10
-                                    </div>
-                                    <button onClick={stopRecording} className="bg-white rounded-full p-4 shadow-lg hover:scale-110 transition-transform">
-                                        <StopIcon />
-                                    </button>
-                                </div>
+                                <>
+                                  <button 
+                                    onClick={() => confirmPhoto('retake')} 
+                                    className="flex flex-col items-center gap-1 text-white hover:text-red-300 transition-colors"
+                                  >
+                                    <div className="bg-slate-700 p-3 rounded-full"><RefreshIcon className="w-6 h-6" /></div>
+                                    <span className="text-xs font-medium">Перезняти</span>
+                                  </button>
+                                  
+                                  <button 
+                                    onClick={() => confirmPhoto('next')} 
+                                    className="flex flex-col items-center gap-1 text-white hover:text-blue-300 transition-colors transform scale-110"
+                                  >
+                                    <div className="bg-blue-600 p-4 rounded-full shadow-lg"><PlusIcon /></div>
+                                    <span className="text-xs font-medium">Наступне</span>
+                                  </button>
+                                  
+                                  <button 
+                                    onClick={() => confirmPhoto('finish')} 
+                                    className="flex flex-col items-center gap-1 text-white hover:text-green-300 transition-colors"
+                                  >
+                                    <div className="bg-green-600 p-3 rounded-full shadow-lg"><CheckIcon /></div>
+                                    <span className="text-xs font-medium">Готово</span>
+                                  </button>
+                                </>
                             )}
                        </div>
+                       
+                       {/* Close Button (only if not reviewing) */}
+                       {!tempImage && (
+                         <button onClick={stopCamera} className="absolute top-4 right-4 bg-black/40 text-white p-2 rounded-full hover:bg-black/60 z-30">
+                           <XMarkIcon />
+                         </button>
+                       )}
                    </div>
                 ) : (
-                   <div className="text-center p-6">
-                       <button 
-                         onClick={startCamera}
-                         className="flex flex-col items-center gap-2 text-slate-400 hover:text-white transition-colors"
-                       >
-                           <div className="p-4 rounded-full bg-slate-800 hover:bg-slate-700 transition-colors">
-                               <VideoIcon />
+                   /* Idle State with Gallery */
+                   <div className="w-full h-full flex flex-col relative">
+                       {capturedImages.length > 0 ? (
+                           <div className="absolute inset-0 overflow-x-auto flex items-center gap-2 p-4 bg-slate-800 custom-scrollbar">
+                               {capturedImages.map((img, idx) => (
+                                   <div key={idx} className="relative flex-shrink-0 h-full aspect-[3/4] rounded-lg overflow-hidden border border-slate-600 group/img">
+                                       <img src={`data:image/jpeg;base64,${img}`} className="w-full h-full object-cover" />
+                                       <button 
+                                          onClick={() => removeCapturedImage(idx)}
+                                          className="absolute top-1 right-1 bg-red-600 text-white rounded-full p-1 opacity-0 group-hover/img:opacity-100 transition-opacity"
+                                       >
+                                           <XMarkIcon />
+                                       </button>
+                                       <span className="absolute bottom-1 left-1 bg-black/60 text-white text-[10px] px-1.5 rounded">{idx + 1}</span>
+                                   </div>
+                               ))}
+                               <button 
+                                 onClick={startCamera}
+                                 className="flex-shrink-0 h-full aspect-[3/4] rounded-lg border-2 border-dashed border-slate-600 flex flex-col items-center justify-center text-slate-400 hover:text-white hover:border-slate-400 transition-all bg-white/5"
+                               >
+                                   <CameraIcon />
+                                   <span className="text-xs mt-2">Додати</span>
+                               </button>
                            </div>
-                           <span className="text-sm font-medium">Натисніть, щоб активувати камеру</span>
-                       </button>
+                       ) : (
+                           <div className="flex-1 flex flex-col items-center justify-center text-center p-6">
+                               <button 
+                                 onClick={startCamera}
+                                 className="flex flex-col items-center gap-2 text-slate-400 hover:text-white transition-colors"
+                               >
+                                   <div className="p-4 rounded-full bg-slate-800 hover:bg-slate-700 transition-colors">
+                                       <CameraIcon />
+                                   </div>
+                                   <span className="text-sm font-medium">Натисніть, щоб зробити фото</span>
+                               </button>
+                           </div>
+                       )}
                    </div>
                 )}
               </div>
@@ -773,14 +761,14 @@ const App: React.FC = () => {
               <div className="mt-4">
                 <button
                   onClick={handleAddAndAnalyze}
-                  disabled={isProcessing || (!inputText.trim() && !videoBlob) || remainingConversions <= 0}
+                  disabled={isProcessing || (!inputText.trim() && capturedImages.length === 0) || remainingConversions <= 0}
                   className={`w-full py-3 px-4 rounded-lg flex justify-center items-center gap-2 font-medium transition-all text-lg ${
-                    isProcessing || (!inputText.trim() && !videoBlob) || remainingConversions <= 0
+                    isProcessing || (!inputText.trim() && capturedImages.length === 0) || remainingConversions <= 0
                       ? "bg-slate-200 text-slate-400 cursor-not-allowed"
                       : "bg-blue-600 text-white hover:bg-blue-700 shadow-md"
                   }`}
                 >
-                  {isProcessing ? <RefreshIcon className="animate-spin" /> : <><PaperAirplaneIcon /> Аналізувати відео/текст</>}
+                  {isProcessing ? <RefreshIcon className="animate-spin" /> : <><PaperAirplaneIcon /> Аналізувати ({capturedImages.length} фото)</>}
                 </button>
                 {remainingConversions <= 3 && remainingConversions > 0 && (
                   <p className="mt-2 text-[10px] text-amber-600 font-medium text-center">
@@ -799,7 +787,7 @@ const App: React.FC = () => {
                       <div className="flex justify-between items-start mb-1">
                         <div className="flex items-center gap-2">
                             <div className="font-medium text-slate-500 text-xs uppercase">Фрагмент {index + 1}</div>
-                            {batch.isImage && <span className="bg-purple-100 text-purple-600 text-[10px] px-1 rounded font-bold">VIDEO</span>}
+                            {batch.isImage && <span className="bg-purple-100 text-purple-600 text-[10px] px-1 rounded font-bold">MEDIA</span>}
                         </div>
                         <button onClick={() => setBatches(prev => prev.filter(b => b.id !== batch.id))} className="text-slate-400 hover:text-red-500">
                            <TrashIcon />
@@ -818,7 +806,7 @@ const App: React.FC = () => {
                 <div className="bg-white rounded-xl shadow-sm border border-slate-200 h-full flex flex-col items-center justify-center p-8 text-center">
                    <div className="bg-purple-100 p-4 rounded-full mb-4"><PhoneIcon /></div>
                    <h2 className="text-xl font-bold text-slate-800 mb-2">Мобільний сканер</h2>
-                   <p className="text-slate-500">Запишіть відео з результатами аналізів. Дані автоматично надішлються на ПК.</p>
+                   <p className="text-slate-500">Зробіть фото результатів аналізів. Дані автоматично надішлються на ПК.</p>
                 </div>
              ) : (
                 <ResultColumn mergedResults={mergedResults} fragmentCount={batches.length} />
