@@ -26,6 +26,12 @@ const PlusIcon = () => (
 
 const PhotoIcon = () => (
   <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+  </svg>
+);
+
+const CameraIcon = () => (
+  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
   </svg>
@@ -52,6 +58,12 @@ const PaperAirplaneIcon = () => (
 const XMarkIcon = () => (
   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+  </svg>
+);
+
+const CheckIcon = () => (
+  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
   </svg>
 );
 
@@ -134,6 +146,12 @@ const App: React.FC = () => {
   
   const [pendingBatch, setPendingBatch] = useState<BatchData | null>(null);
 
+  // Camera State
+  const [isCameraOpen, setIsCameraOpen] = useState(false);
+  const [tempPhoto, setTempPhoto] = useState<string | null>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+
   // Sync / PeerJS State
   const [myPeerId, setMyPeerId] = useState<string | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<'disconnected' | 'connecting' | 'connected'>('disconnected');
@@ -209,6 +227,23 @@ const App: React.FC = () => {
     };
   }, []);
 
+  // Camera Management
+  useEffect(() => {
+    return () => {
+      // Cleanup stream on unmount
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop());
+      }
+    };
+  }, []);
+
+  // Ensure video stream is attached when camera opens or after retake
+  useEffect(() => {
+    if (isCameraOpen && !tempPhoto && videoRef.current && streamRef.current) {
+      videoRef.current.srcObject = streamRef.current;
+    }
+  }, [isCameraOpen, tempPhoto]);
+
   // Listener for tab visibility
   useEffect(() => {
     const handleVisibilityChange = () => {
@@ -221,6 +256,11 @@ const App: React.FC = () => {
         ) {
           reconnectToHost();
         }
+      } else {
+         // Stop camera if backgrounded
+         if (isCameraOpen) {
+            closeCamera();
+         }
       }
     };
 
@@ -228,8 +268,9 @@ const App: React.FC = () => {
     return () => {
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [isClientMode, connectionStatus]);
+  }, [isClientMode, connectionStatus, isCameraOpen]);
 
+  // --- PeerJS Logic ---
   const initializePeer = (forcedId: string | null, targetHostId: string | null) => {
     if (peerInstance.current) return;
     const peer = new Peer(forcedId || undefined, { debug: 1 });
@@ -293,8 +334,6 @@ const App: React.FC = () => {
     conn.on('data', (data: any) => {
       if (data && data.type === 'NEW_BATCH') {
          const newBatch = data.payload;
-         
-         // Sync usage if provided by mobile client
          if (data.usage) {
            localStorage.setItem('lab2excel_usage', JSON.stringify(data.usage));
            setRemainingConversions(Math.max(0, DAILY_LIMIT - data.usage.used));
@@ -344,6 +383,103 @@ const App: React.FC = () => {
     setIsClientMode(true);
     connectToHost(peerInstance.current, manualHostId.trim());
   };
+
+  // --- Camera Logic ---
+  
+  const startCamera = async () => {
+    try {
+      setError(null);
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        video: { 
+          facingMode: 'environment',
+          width: { ideal: 1920 },
+          height: { ideal: 1080 }
+        }, 
+        audio: false 
+      });
+      streamRef.current = stream;
+      setIsCameraOpen(true);
+      setTempPhoto(null);
+      // SrcObject is set in useEffect
+    } catch (err) {
+      console.error("Camera error:", err);
+      setError("Не вдалося отримати доступ до камери.");
+    }
+  };
+
+  const closeCamera = () => {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop());
+      streamRef.current = null;
+    }
+    setIsCameraOpen(false);
+    setTempPhoto(null);
+  };
+
+  const takePhoto = () => {
+    if (!videoRef.current || !streamRef.current) return;
+    
+    const canvas = document.createElement('canvas');
+    const video = videoRef.current;
+    
+    // Resize logic similar to file upload
+    const MAX_DIMENSION = 1280;
+    let width = video.videoWidth;
+    let height = video.videoHeight;
+
+    if (width > height) {
+      if (width > MAX_DIMENSION) {
+        height *= MAX_DIMENSION / width;
+        width = MAX_DIMENSION;
+      }
+    } else {
+      if (height > MAX_DIMENSION) {
+        width *= MAX_DIMENSION / height;
+        height = MAX_DIMENSION;
+      }
+    }
+
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      ctx.drawImage(video, 0, 0, width, height);
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
+      setTempPhoto(dataUrl);
+    }
+  };
+
+  const handleCameraRetake = () => {
+    setTempPhoto(null);
+  };
+
+  const handleCameraNext = () => {
+    if (tempPhoto) {
+      const newImage: ImageFile = {
+        id: Math.random().toString(36).substring(7),
+        data: tempPhoto.split(',')[1],
+        mimeType: 'image/jpeg',
+        preview: tempPhoto
+      };
+      setSelectedImages(prev => [...prev, newImage]);
+      setTempPhoto(null);
+    }
+  };
+
+  const handleCameraFinish = () => {
+    if (tempPhoto) {
+      const newImage: ImageFile = {
+        id: Math.random().toString(36).substring(7),
+        data: tempPhoto.split(',')[1],
+        mimeType: 'image/jpeg',
+        preview: tempPhoto
+      };
+      setSelectedImages(prev => [...prev, newImage]);
+    }
+    closeCamera();
+  };
+
+  // --- Main App Logic ---
 
   const mergedResults = useMemo(() => {
     const final: LabResults = {};
@@ -519,11 +655,81 @@ const App: React.FC = () => {
     return url.toString();
   };
 
-  const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 p-4 md:p-8 relative">
       
+      {/* Camera Modal Overlay */}
+      {isCameraOpen && (
+        <div className="fixed inset-0 z-[100] bg-black flex flex-col">
+          <div className="flex-1 relative overflow-hidden">
+            {!tempPhoto ? (
+              // Live Video View
+              <video 
+                ref={videoRef} 
+                autoPlay 
+                playsInline 
+                muted 
+                className="w-full h-full object-contain" 
+              />
+            ) : (
+              // Captured Image View
+              <img 
+                src={tempPhoto} 
+                alt="Captured" 
+                className="w-full h-full object-contain" 
+              />
+            )}
+            
+            {/* Close Button (only when not reviewing) */}
+            {!tempPhoto && (
+              <button onClick={closeCamera} className="absolute top-4 right-4 bg-black/40 text-white p-2 rounded-full hover:bg-black/60 z-20">
+                <XMarkIcon />
+              </button>
+            )}
+          </div>
+
+          {/* Controls Bar */}
+          <div className="bg-black/90 p-6 flex justify-center items-center gap-8 min-h-[120px]">
+             {!tempPhoto ? (
+                // Shutter Button
+                <button 
+                  onClick={takePhoto} 
+                  className="bg-white rounded-full p-1 border-4 border-slate-300 hover:scale-105 transition-transform"
+                >
+                  <div className="w-16 h-16 bg-white rounded-full border-2 border-slate-900" />
+                </button>
+             ) : (
+                // Post-Capture Actions
+                <>
+                  <button 
+                    onClick={handleCameraRetake} 
+                    className="flex flex-col items-center gap-1 text-white hover:text-red-300 transition-colors"
+                  >
+                    <div className="bg-slate-700 p-3 rounded-full"><RefreshIcon className="w-6 h-6" /></div>
+                    <span className="text-xs font-medium">Перезняти</span>
+                  </button>
+                  
+                  <button 
+                    onClick={handleCameraNext} 
+                    className="flex flex-col items-center gap-1 text-white hover:text-blue-300 transition-colors transform scale-110"
+                  >
+                    <div className="bg-blue-600 p-4 rounded-full shadow-lg border-2 border-blue-400"><PlusIcon /></div>
+                    <span className="text-xs font-medium">Наступне</span>
+                  </button>
+                  
+                  <button 
+                    onClick={handleCameraFinish} 
+                    className="flex flex-col items-center gap-1 text-white hover:text-green-300 transition-colors"
+                  >
+                    <div className="bg-green-600 p-3 rounded-full shadow-lg border-2 border-green-400"><CheckIcon /></div>
+                    <span className="text-xs font-medium">Завершити</span>
+                  </button>
+                </>
+             )}
+          </div>
+        </div>
+      )}
+
       {/* QR Modal */}
       {(showQrModal || showManualEntry) && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/80 backdrop-blur-sm p-4">
@@ -640,17 +846,23 @@ const App: React.FC = () => {
             <div className="bg-white p-5 rounded-xl shadow-sm border border-slate-200">
               <div className="flex justify-between items-center mb-2">
                 <label className="block text-sm font-semibold text-slate-700">Введіть текст або додайте фото</label>
-                <button onClick={() => fileInputRef.current?.click()} className="text-xs font-medium text-blue-600 hover:text-blue-700 flex items-center gap-1.5 px-2 py-1 rounded bg-blue-50">
-                  <PhotoIcon /> {selectedImages.length > 0 ? 'Додати ще' : 'Обрати фото'}
-                </button>
+                <div className="flex gap-2">
+                  <button onClick={startCamera} className="text-xs font-medium text-white bg-blue-600 hover:bg-blue-700 flex items-center gap-1.5 px-3 py-1.5 rounded transition-colors shadow-sm">
+                    <CameraIcon /> Камера
+                  </button>
+                  <button onClick={() => fileInputRef.current?.click()} className="text-xs font-medium text-slate-600 hover:text-blue-600 flex items-center gap-1.5 px-3 py-1.5 rounded bg-slate-100 hover:bg-blue-50 transition-colors">
+                    <PhotoIcon /> Файл
+                  </button>
+                </div>
                 <input type="file" ref={fileInputRef} onChange={handleFileChange} accept="image/*" className="hidden" multiple />
               </div>
 
               {selectedImages.length > 0 && (
                 <div className="mb-3 grid grid-cols-3 sm:grid-cols-4 gap-2">
-                  {selectedImages.map((img) => (
+                  {selectedImages.map((img, idx) => (
                     <div key={img.id} className="relative group aspect-square rounded-lg border-2 border-blue-200 overflow-hidden">
                        <img src={img.preview} className="w-full h-full object-cover" />
+                       <div className="absolute bottom-0 left-0 bg-blue-600 text-white text-[10px] px-1.5 py-0.5 rounded-tr opacity-90">{idx + 1}</div>
                        <button onClick={() => removeImage(img.id)} className="absolute top-1 right-1 bg-red-500 text-white rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
                          <XMarkIcon />
                        </button>
@@ -684,7 +896,7 @@ const App: React.FC = () => {
                       : "bg-blue-600 text-white hover:bg-blue-700 shadow-md"
                   }`}
                 >
-                  {isProcessing ? <RefreshIcon className="animate-spin" /> : <><PlusIcon /> Додати до звіту</>}
+                  {isProcessing ? <RefreshIcon className="animate-spin" /> : <><PaperAirplaneIcon /> Аналізувати ({selectedImages.length} фото)</>}
                 </button>
                 {remainingConversions <= 3 && remainingConversions > 0 && (
                   <p className="mt-2 text-[10px] text-amber-600 font-medium text-center">
