@@ -18,7 +18,7 @@ const extractionSchema: Schema = {
   required: [],
 };
 
-export const extractLabData = async (text: string, images?: string[]): Promise<LabResults> => {
+export const extractLabData = async (text: string, imagesData?: { data: string, mimeType: string }[]): Promise<LabResults> => {
   if (!process.env.API_KEY) {
     throw new Error("API Key is missing");
   }
@@ -33,11 +33,11 @@ export const extractLabData = async (text: string, images?: string[]): Promise<L
      return `- "${p.label}" -> maps to key "${p.id}"`;
   }).join("\n");
 
-  const hasImages = images && images.length > 0;
+  const hasImages = imagesData && imagesData.length > 0;
 
-  const prompt = `You are an expert medical data extractor specialized in parsing Ukrainian laboratory test results.
+  const prompt = `You are an expert medical data extractor specialized in parsing Ukrainian laboratory test results from text or images.
 
-${hasImages ? `Analyze the provided ${images.length} image(s) of medical reports.` : "Analyze the unstructured text provided below."}
+${hasImages ? "Analyze the provided image(s) of medical reports." : "Analyze the unstructured text provided below."}
 
 ### Extraction Rules:
 1. **Target Parameters**: Extract values ONLY for the parameters listed in the mapping below.
@@ -57,12 +57,12 @@ Return the result strictly as a JSON object matching the schema.`;
     parts.push({ text: `### Input Text:\n"""\n${text}\n"""` });
   }
 
-  if (hasImages && images) {
-    images.forEach(base64Data => {
-       parts.push({
+  if (hasImages) {
+    imagesData.forEach(img => {
+      parts.push({
         inlineData: {
-          data: base64Data,
-          mimeType: "image/jpeg"
+          data: img.data,
+          mimeType: img.mimeType
         }
       });
     });

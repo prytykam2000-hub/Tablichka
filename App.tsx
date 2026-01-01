@@ -24,16 +24,10 @@ const PlusIcon = () => (
   </svg>
 );
 
-const CameraIcon = () => (
-  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+const PhotoIcon = () => (
+  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
-  </svg>
-);
-
-const CheckIcon = () => (
-  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
   </svg>
 );
 
@@ -71,7 +65,14 @@ interface BatchData {
   id: number;
   text: string;
   results: LabResults;
-  isImage?: boolean; // Now indicates "Media present"
+  isImage?: boolean;
+}
+
+interface ImageFile {
+  id: string;
+  data: string;
+  mimeType: string;
+  preview: string;
 }
 
 const DAILY_LIMIT = 20;
@@ -80,23 +81,58 @@ const generateShortId = () => {
   return 'lab-' + Math.floor(Math.random() * 9000 + 1000);
 };
 
+const resizeAndCompressImage = (file: File): Promise<ImageFile> => {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.readAsDataURL(file);
+    reader.onload = (event) => {
+      const img = new Image();
+      img.src = event.target?.result as string;
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        const MAX_DIMENSION = 1280; 
+        let width = img.width;
+        let height = img.height;
+
+        if (width > height) {
+          if (width > MAX_DIMENSION) {
+            height *= MAX_DIMENSION / width;
+            width = MAX_DIMENSION;
+          }
+        } else {
+          if (height > MAX_DIMENSION) {
+            width *= MAX_DIMENSION / height;
+            height = MAX_DIMENSION;
+          }
+        }
+
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        ctx?.drawImage(img, 0, 0, width, height);
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.6);
+        
+        resolve({
+          id: Math.random().toString(36).substring(7),
+          data: dataUrl.split(',')[1],
+          mimeType: 'image/jpeg',
+          preview: dataUrl
+        });
+      };
+    };
+  });
+};
+
 const App: React.FC = () => {
   const [inputText, setInputText] = useState('');
+  const [selectedImages, setSelectedImages] = useState<ImageFile[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [batches, setBatches] = useState<Array<BatchData>>([]);
   const [error, setError] = useState<string | null>(null);
+  const [isCompressing, setIsCompressing] = useState(false);
   const [remainingConversions, setRemainingConversions] = useState(DAILY_LIMIT);
-  const [pendingBatch, setPendingBatch] = useState<BatchData | null>(null);
-
-  // Photo Capture State
-  const [capturedImages, setCapturedImages] = useState<string[]>([]); // Array of base64 strings (jpeg)
-  const [tempImage, setTempImage] = useState<string | null>(null); // The photo currently being reviewed
-  const [isCameraActive, setIsCameraActive] = useState(false);
   
-  // Refs
-  const videoPreviewRef = useRef<HTMLVideoElement>(null);
-  const streamRef = useRef<MediaStream | null>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [pendingBatch, setPendingBatch] = useState<BatchData | null>(null);
 
   // Sync / PeerJS State
   const [myPeerId, setMyPeerId] = useState<string | null>(null);
@@ -106,8 +142,10 @@ const App: React.FC = () => {
   const [manualHostId, setManualHostId] = useState('');
   const [showManualEntry, setShowManualEntry] = useState(false);
 
+  // Reconnection refs
   const peerInstance = useRef<any>(null);
   const connRef = useRef<any>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const targetHostIdRef = useRef<string | null>(null);
   const isIntentionalDisconnectRef = useRef<boolean>(false);
 
@@ -148,7 +186,7 @@ const App: React.FC = () => {
     return newStats;
   };
 
-  // PeerJS Init
+  // Init Peer
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const hostIdFromUrl = params.get('host');
@@ -168,7 +206,6 @@ const App: React.FC = () => {
         peerInstance.current.destroy();
         peerInstance.current = null;
       }
-      stopCamera();
     };
   }, []);
 
@@ -184,11 +221,6 @@ const App: React.FC = () => {
         ) {
           reconnectToHost();
         }
-      } else {
-        // Stop camera if backgrounded to save battery/privacy
-        if (isCameraActive) {
-            stopCamera();
-        }
       }
     };
 
@@ -196,94 +228,7 @@ const App: React.FC = () => {
     return () => {
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [isClientMode, connectionStatus, isCameraActive]);
-
-  // --- Camera Logic ---
-
-  const startCamera = async () => {
-    try {
-        setError(null);
-        const stream = await navigator.mediaDevices.getUserMedia({ 
-            video: { 
-                facingMode: 'environment',
-                width: { ideal: 1920 }, // Higher res for photos
-                height: { ideal: 1080 }
-            }, 
-            audio: false 
-        });
-        
-        streamRef.current = stream;
-        if (videoPreviewRef.current) {
-            videoPreviewRef.current.srcObject = stream;
-        }
-        setIsCameraActive(true);
-        setTempImage(null);
-    } catch (err) {
-        console.error("Camera error:", err);
-        setError("Не вдалося отримати доступ до камери. Перевірте дозволи.");
-    }
-  };
-
-  useEffect(() => {
-    if (isCameraActive && videoPreviewRef.current && streamRef.current) {
-       // Ensure stream stays attached
-       if (videoPreviewRef.current.srcObject !== streamRef.current) {
-          videoPreviewRef.current.srcObject = streamRef.current;
-       }
-    }
-  }, [isCameraActive, tempImage]); 
-
-  const stopCamera = () => {
-    if (streamRef.current) {
-        streamRef.current.getTracks().forEach(track => track.stop());
-        streamRef.current = null;
-    }
-    if (videoPreviewRef.current) {
-        videoPreviewRef.current.srcObject = null;
-    }
-    setIsCameraActive(false);
-  };
-
-  const takePhoto = () => {
-      if (!videoPreviewRef.current || !streamRef.current) return;
-      
-      const video = videoPreviewRef.current;
-      const canvas = document.createElement('canvas');
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      const ctx = canvas.getContext('2d');
-      if (ctx) {
-          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-          const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
-          // Remove prefix to store just base64 data for logic, but keep it as full URL for preview
-          setTempImage(dataUrl);
-      }
-  };
-
-  const confirmPhoto = (action: 'retake' | 'next' | 'finish') => {
-      if (!tempImage) return;
-      
-      const cleanBase64 = tempImage.split(',')[1];
-
-      if (action === 'retake') {
-          setTempImage(null);
-          // Video should still be playing underneath, just remove the overlay
-      } else if (action === 'next') {
-          setCapturedImages(prev => [...prev, cleanBase64]);
-          setTempImage(null);
-          // Ready for next photo
-      } else if (action === 'finish') {
-          setCapturedImages(prev => [...prev, cleanBase64]);
-          setTempImage(null);
-          stopCamera();
-      }
-  };
-
-  const removeCapturedImage = (index: number) => {
-      setCapturedImages(prev => prev.filter((_, i) => i !== index));
-  };
-
-  // --- Peer Logic ---
+  }, [isClientMode, connectionStatus]);
 
   const initializePeer = (forcedId: string | null, targetHostId: string | null) => {
     if (peerInstance.current) return;
@@ -348,6 +293,8 @@ const App: React.FC = () => {
     conn.on('data', (data: any) => {
       if (data && data.type === 'NEW_BATCH') {
          const newBatch = data.payload;
+         
+         // Sync usage if provided by mobile client
          if (data.usage) {
            localStorage.setItem('lab2excel_usage', JSON.stringify(data.usage));
            setRemainingConversions(Math.max(0, DAILY_LIMIT - data.usage.used));
@@ -410,15 +357,62 @@ const App: React.FC = () => {
     return final;
   }, [batches]);
 
+  const processFiles = async (files: FileList) => {
+    const validFiles = Array.from(files).filter(f => f.type.startsWith('image/'));
+    if (validFiles.length === 0) {
+        if (files.length > 0) setError('Будь ласка, оберіть файли зображень');
+        return;
+    }
+    setIsCompressing(true);
+    setError(null);
+    try {
+      const processedImages = await Promise.all(
+        validFiles.map(file => resizeAndCompressImage(file))
+      );
+      setSelectedImages(prev => [...prev, ...processedImages]);
+    } catch (e) {
+      setError("Помилка обробки зображення. Спробуйте ще раз.");
+    } finally {
+      setIsCompressing(false);
+    }
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (files && files.length > 0) processFiles(files);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const handlePaste = (e: React.ClipboardEvent) => {
+    const items = e.clipboardData.items;
+    const files: File[] = [];
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].type.indexOf('image') !== -1) {
+        const file = items[i].getAsFile();
+        if (file) files.push(file);
+      }
+    }
+    if (files.length > 0) {
+      e.preventDefault();
+      const dt = new DataTransfer();
+      files.forEach(f => dt.items.add(f));
+      processFiles(dt.files);
+    }
+  };
+
+  const removeImage = (id: string) => {
+    setSelectedImages(prev => prev.filter(img => img.id !== id));
+  };
 
   const clearInputs = () => {
     setInputText(''); 
-    setCapturedImages([]);
+    setSelectedImages([]);
+    if (fileInputRef.current) fileInputRef.current.value = '';
     setPendingBatch(null);
   };
 
   const handleAddAndAnalyze = async () => {
-    if (!inputText.trim() && capturedImages.length === 0) return;
+    if (!inputText.trim() && selectedImages.length === 0) return;
     if (remainingConversions <= 0) {
         setError("Ви вичерпали денний ліміт (20/20). Повертайтеся завтра!");
         return;
@@ -448,30 +442,31 @@ const App: React.FC = () => {
     }
 
     try {
-      // images are already base64 without prefix in `capturedImages`
-      const results = await extractLabData(inputText, capturedImages);
+      const imagesPayload = selectedImages.map(img => ({ data: img.data, mimeType: img.mimeType }));
+      const results = await extractLabData(inputText, imagesPayload.length > 0 ? imagesPayload : undefined);
       
       const foundCount = Object.values(results).filter(v => v !== null && v !== '').length;
 
       if (foundCount === 0) {
         setError("Не вдалося знайти показників.");
       } else {
-        const usageStats = trackUsage();
+        const usageStats = trackUsage(); // Decrease conversion counter and get stats
         
         let labelText = inputText;
-        if (capturedImages.length > 0) {
-          labelText = `Фото (${capturedImages.length} шт.) ${inputText ? '+ Текст' : ''}`;
+        if (selectedImages.length > 0) {
+          labelText = selectedImages.length === 1 ? "Аналіз фото" : `Аналіз ${selectedImages.length} фото`;
         }
 
         const newBatch = {
           id: Date.now(),
           text: labelText,
           results: results,
-          isImage: capturedImages.length > 0
+          isImage: selectedImages.length > 0
         };
 
         if (isClientMode) {
           if (connRef.current && connRef.current.open) {
+            // Send new batch AND updated usage stats for synchronization
             connRef.current.send({ 
               type: 'NEW_BATCH', 
               payload: newBatch,
@@ -495,7 +490,6 @@ const App: React.FC = () => {
       let errorMessage = "Помилка обробки. Перевірте з'єднання.";
       const errStr = (err?.message || err?.toString() || "").toLowerCase();
       if (errStr.includes("429")) errorMessage = "Вичерпано ліміт API. Спробуйте через хвилину.";
-      if (errStr.includes("payload")) errorMessage = "Дані занадто великі. Спробуйте менше фото.";
       setError(errorMessage);
     } finally {
       setIsProcessing(false);
@@ -524,6 +518,8 @@ const App: React.FC = () => {
     url.searchParams.set('host', myPeerId);
     return url.toString();
   };
+
+  const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 p-4 md:p-8 relative">
@@ -607,6 +603,7 @@ const App: React.FC = () => {
                 {isClientMode && (
                    <span className="bg-purple-100 text-purple-700 text-xs px-2 py-0.5 rounded-full font-bold border border-purple-200">MOBILE</span>
                 )}
+                {/* Usage Counter Badge */}
                 <div className={`flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-bold border ${remainingConversions <= 3 ? 'bg-red-50 text-red-600 border-red-200' : 'bg-blue-50 text-blue-700 border-blue-200'}`}>
                   <ZapIcon className="w-3 h-3" />
                   <span>{remainingConversions}/{DAILY_LIMIT}</span>
@@ -641,114 +638,33 @@ const App: React.FC = () => {
         <main className="grid grid-cols-1 lg:grid-cols-2 gap-8">
           <div className="flex flex-col gap-6">
             <div className="bg-white p-5 rounded-xl shadow-sm border border-slate-200">
-              <label className="block text-sm font-semibold text-slate-700 mb-3">Завантажити фото або текст</label>
-
-              {/* Camera / Image Area */}
-              <div className="mb-4 bg-slate-900 rounded-lg overflow-hidden relative aspect-video flex flex-col items-center justify-center border-4 border-slate-100 shadow-inner group">
-                {isCameraActive ? (
-                   <div className="relative w-full h-full">
-                       <video ref={videoPreviewRef} autoPlay playsInline muted className="w-full h-full object-cover" />
-                       
-                       {/* Freeze frame overlay if reviewing a photo */}
-                       {tempImage && (
-                          <div className="absolute inset-0 z-20 bg-black">
-                            <img src={tempImage} alt="Captured" className="w-full h-full object-contain" />
-                            <div className="absolute inset-0 bg-black/40" /> {/* Slight dim */}
-                          </div>
-                       )}
-
-                       {/* Action Buttons */}
-                       <div className="absolute bottom-0 left-0 right-0 p-6 flex justify-center items-center gap-6 z-30 bg-gradient-to-t from-black/80 to-transparent">
-                            {!tempImage ? (
-                                <button 
-                                  onClick={takePhoto} 
-                                  className="bg-white rounded-full p-1 border-4 border-slate-300 hover:scale-105 transition-transform"
-                                >
-                                  <div className="w-14 h-14 bg-white rounded-full border-2 border-slate-900" />
-                                </button>
-                            ) : (
-                                <>
-                                  <button 
-                                    onClick={() => confirmPhoto('retake')} 
-                                    className="flex flex-col items-center gap-1 text-white hover:text-red-300 transition-colors"
-                                  >
-                                    <div className="bg-slate-700 p-3 rounded-full"><RefreshIcon className="w-6 h-6" /></div>
-                                    <span className="text-xs font-medium">Перезняти</span>
-                                  </button>
-                                  
-                                  <button 
-                                    onClick={() => confirmPhoto('next')} 
-                                    className="flex flex-col items-center gap-1 text-white hover:text-blue-300 transition-colors transform scale-110"
-                                  >
-                                    <div className="bg-blue-600 p-4 rounded-full shadow-lg"><PlusIcon /></div>
-                                    <span className="text-xs font-medium">Наступне</span>
-                                  </button>
-                                  
-                                  <button 
-                                    onClick={() => confirmPhoto('finish')} 
-                                    className="flex flex-col items-center gap-1 text-white hover:text-green-300 transition-colors"
-                                  >
-                                    <div className="bg-green-600 p-3 rounded-full shadow-lg"><CheckIcon /></div>
-                                    <span className="text-xs font-medium">Готово</span>
-                                  </button>
-                                </>
-                            )}
-                       </div>
-                       
-                       {/* Close Button (only if not reviewing) */}
-                       {!tempImage && (
-                         <button onClick={stopCamera} className="absolute top-4 right-4 bg-black/40 text-white p-2 rounded-full hover:bg-black/60 z-30">
-                           <XMarkIcon />
-                         </button>
-                       )}
-                   </div>
-                ) : (
-                   /* Idle State with Gallery */
-                   <div className="w-full h-full flex flex-col relative">
-                       {capturedImages.length > 0 ? (
-                           <div className="absolute inset-0 overflow-x-auto flex items-center gap-2 p-4 bg-slate-800 custom-scrollbar">
-                               {capturedImages.map((img, idx) => (
-                                   <div key={idx} className="relative flex-shrink-0 h-full aspect-[3/4] rounded-lg overflow-hidden border border-slate-600 group/img">
-                                       <img src={`data:image/jpeg;base64,${img}`} className="w-full h-full object-cover" />
-                                       <button 
-                                          onClick={() => removeCapturedImage(idx)}
-                                          className="absolute top-1 right-1 bg-red-600 text-white rounded-full p-1 opacity-0 group-hover/img:opacity-100 transition-opacity"
-                                       >
-                                           <XMarkIcon />
-                                       </button>
-                                       <span className="absolute bottom-1 left-1 bg-black/60 text-white text-[10px] px-1.5 rounded">{idx + 1}</span>
-                                   </div>
-                               ))}
-                               <button 
-                                 onClick={startCamera}
-                                 className="flex-shrink-0 h-full aspect-[3/4] rounded-lg border-2 border-dashed border-slate-600 flex flex-col items-center justify-center text-slate-400 hover:text-white hover:border-slate-400 transition-all bg-white/5"
-                               >
-                                   <CameraIcon />
-                                   <span className="text-xs mt-2">Додати</span>
-                               </button>
-                           </div>
-                       ) : (
-                           <div className="flex-1 flex flex-col items-center justify-center text-center p-6">
-                               <button 
-                                 onClick={startCamera}
-                                 className="flex flex-col items-center gap-2 text-slate-400 hover:text-white transition-colors"
-                               >
-                                   <div className="p-4 rounded-full bg-slate-800 hover:bg-slate-700 transition-colors">
-                                       <CameraIcon />
-                                   </div>
-                                   <span className="text-sm font-medium">Натисніть, щоб зробити фото</span>
-                               </button>
-                           </div>
-                       )}
-                   </div>
-                )}
+              <div className="flex justify-between items-center mb-2">
+                <label className="block text-sm font-semibold text-slate-700">Введіть текст або додайте фото</label>
+                <button onClick={() => fileInputRef.current?.click()} className="text-xs font-medium text-blue-600 hover:text-blue-700 flex items-center gap-1.5 px-2 py-1 rounded bg-blue-50">
+                  <PhotoIcon /> {selectedImages.length > 0 ? 'Додати ще' : 'Обрати фото'}
+                </button>
+                <input type="file" ref={fileInputRef} onChange={handleFileChange} accept="image/*" className="hidden" multiple />
               </div>
+
+              {selectedImages.length > 0 && (
+                <div className="mb-3 grid grid-cols-3 sm:grid-cols-4 gap-2">
+                  {selectedImages.map((img) => (
+                    <div key={img.id} className="relative group aspect-square rounded-lg border-2 border-blue-200 overflow-hidden">
+                       <img src={img.preview} className="w-full h-full object-cover" />
+                       <button onClick={() => removeImage(img.id)} className="absolute top-1 right-1 bg-red-500 text-white rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                         <XMarkIcon />
+                       </button>
+                    </div>
+                  ))}
+                </div>
+              )}
 
               <textarea
                 value={inputText}
                 onChange={(e) => setInputText(e.target.value)}
-                placeholder="Або вставте текст результатів сюди..."
-                className="w-full h-24 p-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 bg-slate-50 resize-none mb-2"
+                onPaste={handlePaste}
+                placeholder="Вставте текст сюди..."
+                className="w-full h-32 p-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 bg-slate-50 resize-none"
                 disabled={isProcessing}
               />
               
@@ -761,14 +677,14 @@ const App: React.FC = () => {
               <div className="mt-4">
                 <button
                   onClick={handleAddAndAnalyze}
-                  disabled={isProcessing || (!inputText.trim() && capturedImages.length === 0) || remainingConversions <= 0}
-                  className={`w-full py-3 px-4 rounded-lg flex justify-center items-center gap-2 font-medium transition-all text-lg ${
-                    isProcessing || (!inputText.trim() && capturedImages.length === 0) || remainingConversions <= 0
+                  disabled={isProcessing || isCompressing || (!inputText.trim() && selectedImages.length === 0) || remainingConversions <= 0}
+                  className={`w-full py-2.5 px-4 rounded-lg flex justify-center items-center gap-2 font-medium transition-all ${
+                    isProcessing || isCompressing || (!inputText.trim() && selectedImages.length === 0) || remainingConversions <= 0
                       ? "bg-slate-200 text-slate-400 cursor-not-allowed"
                       : "bg-blue-600 text-white hover:bg-blue-700 shadow-md"
                   }`}
                 >
-                  {isProcessing ? <RefreshIcon className="animate-spin" /> : <><PaperAirplaneIcon /> Аналізувати ({capturedImages.length} фото)</>}
+                  {isProcessing ? <RefreshIcon className="animate-spin" /> : <><PlusIcon /> Додати до звіту</>}
                 </button>
                 {remainingConversions <= 3 && remainingConversions > 0 && (
                   <p className="mt-2 text-[10px] text-amber-600 font-medium text-center">
@@ -785,10 +701,7 @@ const App: React.FC = () => {
                   {batches.map((batch, index) => (
                     <div key={batch.id} className="p-3 bg-slate-50 rounded-lg border border-slate-100 text-sm group relative">
                       <div className="flex justify-between items-start mb-1">
-                        <div className="flex items-center gap-2">
-                            <div className="font-medium text-slate-500 text-xs uppercase">Фрагмент {index + 1}</div>
-                            {batch.isImage && <span className="bg-purple-100 text-purple-600 text-[10px] px-1 rounded font-bold">MEDIA</span>}
-                        </div>
+                        <div className="font-medium text-slate-500 text-xs uppercase">Фрагмент {index + 1}</div>
                         <button onClick={() => setBatches(prev => prev.filter(b => b.id !== batch.id))} className="text-slate-400 hover:text-red-500">
                            <TrashIcon />
                         </button>
@@ -806,7 +719,7 @@ const App: React.FC = () => {
                 <div className="bg-white rounded-xl shadow-sm border border-slate-200 h-full flex flex-col items-center justify-center p-8 text-center">
                    <div className="bg-purple-100 p-4 rounded-full mb-4"><PhoneIcon /></div>
                    <h2 className="text-xl font-bold text-slate-800 mb-2">Мобільний сканер</h2>
-                   <p className="text-slate-500">Зробіть фото результатів аналізів. Дані автоматично надішлються на ПК.</p>
+                   <p className="text-slate-500">Результати автоматично надсилаються на ПК.</p>
                 </div>
              ) : (
                 <ResultColumn mergedResults={mergedResults} fragmentCount={batches.length} />
