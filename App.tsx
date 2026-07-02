@@ -623,9 +623,11 @@ const App: React.FC = () => {
         }
       }
     } catch (err: any) {
-      let errorMessage = "Помилка обробки. Перевірте з'єднання.";
-      const errStr = (err?.message || err?.toString() || "").toLowerCase();
+      console.error("Extraction error:", err);
+      let errorMessage = err?.message || "Помилка обробки. Перевірте з'єднання.";
+      const errStr = errorMessage.toLowerCase();
       if (errStr.includes("429")) errorMessage = "Вичерпано ліміт API. Спробуйте через хвилину.";
+      if (errStr.includes("api key") || errStr.includes("configured")) errorMessage = "Помилка конфігурації сервера. Зверніться до адміністратора.";
       setError(errorMessage);
     } finally {
       setIsProcessing(false);
