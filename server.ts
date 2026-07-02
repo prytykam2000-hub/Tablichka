@@ -11,6 +11,11 @@ import { LabResults } from "./types";
 const app = express();
 const PORT = 3000;
 
+// Health check route BEFORE everything else
+app.get("/api/health", (req, res) => {
+  res.json({ status: "ok", message: "Server is running" });
+});
+
 app.use(express.json({ limit: '50mb' }));
 
 // Gemini Setup
@@ -40,11 +45,13 @@ const extractionSchema: Schema = {
 };
 
 app.post("/api/extract", async (req, res) => {
+  console.log("Extraction request received");
   try {
     const { text, imagesData } = req.body;
 
     if (!process.env.GEMINI_API_KEY) {
-      return res.status(500).json({ error: "Gemini API key is not configured on the server." });
+      console.error("Missing GEMINI_API_KEY");
+      return res.status(500).json({ error: "Gemini API key is not configured on the server. Please check the Secrets panel in Settings." });
     }
 
     const mappingInstructions = LAB_PARAMETERS.map(p => {
@@ -80,6 +87,7 @@ Return the result strictly as a JSON object matching the schema.`;
     }
 
     if (hasImages) {
+      console.log(`Processing ${imagesData.length} images`);
       imagesData.forEach((img: any) => {
         parts.push({
           inlineData: {
@@ -91,7 +99,7 @@ Return the result strictly as a JSON object matching the schema.`;
     }
 
     const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
+      model: "gemini-1.5-flash",
       contents: [{ role: "user", parts }],
       config: {
         responseMimeType: "application/json",
@@ -101,6 +109,7 @@ Return the result strictly as a JSON object matching the schema.`;
     });
 
     const resultText = response.text;
+    console.log("Extraction successful");
     if (!resultText) {
       return res.json({});
     }

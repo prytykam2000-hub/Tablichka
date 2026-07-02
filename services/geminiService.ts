@@ -10,9 +10,16 @@ export const extractLabData = async (text: string, imagesData?: { data: string, 
       body: JSON.stringify({ text, imagesData }),
     });
 
+    const contentType = response.headers.get("content-type");
+    if (!contentType || !contentType.includes("application/json")) {
+      const textResponse = await response.text();
+      console.error("Non-JSON response received:", textResponse);
+      throw new Error("Сервер повернув помилку (не JSON). Можливо, API ключ не налаштовано або сервер перевантажений.");
+    }
+
     if (!response.ok) {
       const errorData = await response.json();
-      throw new Error(errorData.error || `Server error: ${response.status}`);
+      throw new Error(errorData.error || `Помилка сервера: ${response.status}`);
     }
 
     return await response.json() as LabResults;
